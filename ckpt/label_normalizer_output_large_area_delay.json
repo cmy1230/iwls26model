@@ -1,0 +1,32 @@
+{
+  "labels": [
+    "area",
+    "delay"
+  ],
+  "eps": 1e-08,
+  "clamp_min_before_log": 0.0,
+  "use_log1p": {
+    "area": true,
+    "delay": true
+  },
+  "stats": {
+    "area": {
+      "name": "area",
+      "mean": 6.026015758514404,
+      "std": 1.953087329864502,
+      "min": 1.6992785930633545,
+      "max": 10.129151344299316,
+      "count": 35070,
+      "use_log1p": true
+    },
+    "delay": {
+      "name": "delay",
+      "mean": 5.902318954467773,
+      "std": 1.4165455102920532,
+      "min": 4.045329570770264,
+      "max": 10.67238998413086,
+      "count": 35070,
+      "use_log1p": true
+    }
+  }
+}
