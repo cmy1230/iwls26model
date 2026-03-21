@@ -372,7 +372,7 @@ def compute_metrics_original_space(
     eps: float = 1e-8,
 ) -> Dict[str, Any]:
     """
-    Compute metrics (MSE, R², MAPE, MAE) in ORIGINAL space.
+    Compute metrics (MSE, R², Pearson r, MAPE, MAE) in ORIGINAL space.
     pred/target: (N,T) or (N,T,1)
     """
     if pred.ndim == 3 and pred.shape[-1] == 1:
@@ -382,7 +382,7 @@ def compute_metrics_original_space(
 
     mse = ((pred - target) ** 2).mean().item()
 
-    r2_list, mape_list, mae_list = [], [], []
+    r2_list, mape_list, mae_list, pearson_list = [], [], [], []
     num_tasks = target.shape[1]
 
     for t in range(num_tasks):
@@ -399,6 +399,16 @@ def compute_metrics_original_space(
             r2 = float((1.0 - sse / (sst + eps)).item())
         r2_list.append(r2)
 
+        # Pearson r（与 pred/target 全体样本的线性相关）
+        yt_c = yt - yt.mean()
+        pt_c = pt - pt.mean()
+        denom_p = torch.sqrt((yt_c ** 2).sum() * (pt_c ** 2).sum()).clamp_min(eps)
+        if denom_p.item() < eps * 10:
+            pearson_r = 0.0
+        else:
+            pearson_r = float((yt_c * pt_c).sum() / denom_p)
+        pearson_list.append(pearson_r)
+
         # MAPE
         denom = torch.clamp(torch.abs(yt), min=eps)
         mape = (torch.abs(yt - pt) / denom).mean().item()
@@ -411,6 +421,7 @@ def compute_metrics_original_space(
     r2_mean = sum(r2_list) / len(r2_list)
     mape_mean = sum(mape_list) / len(mape_list)
     mae_mean = sum(mae_list) / len(mae_list)
+    pearson_mean = sum(pearson_list) / len(pearson_list)
 
     return {
         "mse": mse,
@@ -418,6 +429,8 @@ def compute_metrics_original_space(
         "mae_per_task": mae_list,
         "r2_mean": r2_mean,
         "r2_per_task": r2_list,
+        "pearson_mean": pearson_mean,
+        "pearson_per_task": pearson_list,
         "mape_mean": mape_mean,
         "mape_per_task": mape_list,
         "n_samples": int(target.shape[0]),

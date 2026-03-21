@@ -22,6 +22,62 @@ from label_normalizer import LabelNormalizer, compute_metrics_per_circuit
 from model import TopCircuitSeqModel, TopCircuitSeqModelCfg, load_pt_checkpoint
 from quantile_bins import QuantileBinManager
 
+
+def _model_cfg_to_dict(cfg: TopCircuitSeqModelCfg) -> Dict[str, Any]:
+    return {
+        "num_tasks": cfg.num_tasks,
+        "gin_in_dim": cfg.gin_in_dim,
+        "gin_hidden_dim": cfg.gin_hidden_dim,
+        "gin_layers": cfg.gin_layers,
+        "seq_in_dim": cfg.seq_in_dim,
+        "seq_hidden_dim": cfg.seq_hidden_dim,
+        "seq_layers": cfg.seq_layers,
+        "fe_num_heads": cfg.fe_num_heads,
+        "fe_num_layers": cfg.fe_num_layers,
+        "fs_num_heads": cfg.fs_num_heads,
+        "fs_num_layers": cfg.fs_num_layers,
+        "ens_num_classes": cfg.ens_num_classes,
+        "ens_num_layers": cfg.ens_num_layers,
+        "ens_hidden_dim": cfg.ens_hidden_dim,
+        "fs_dropout": cfg.fs_dropout,
+        "fs_attn_dropout": cfg.fs_attn_dropout,
+        "ens_dropout": cfg.ens_dropout,
+        "ens_attn_dropout": cfg.ens_attn_dropout,
+        "graph_pool": cfg.graph_pool,
+    }
+
+
+def _build_run_meta(
+    args: argparse.Namespace,
+    model_cfg: TopCircuitSeqModelCfg,
+    train_indices: Sequence[int],
+) -> Dict[str, Any]:
+    gcache = (getattr(args, "graph_emb_cache_path", None) or "").strip()
+    return {
+        "version": 1,
+        "circuit_name": args.circuit_name,
+        "base_checkpoint": os.path.abspath(args.checkpoint),
+        "csv": os.path.abspath(args.csv),
+        "circuit_dir": os.path.abspath(args.circuit_dir),
+        "seq_dir": os.path.abspath(args.seq_dir),
+        "normalizer_path": os.path.abspath(args.normalizer_path) if args.normalizer_path else "",
+        "bin_manager_path": os.path.abspath(args.bin_manager_path) if args.bin_manager_path else "",
+        "train_n": args.train_n,
+        "train_indices": sorted(int(i) for i in train_indices),
+        "seed": args.seed,
+        "lora_r": args.lora_r,
+        "lora_alpha": args.lora_alpha,
+        "epochs": args.epochs,
+        "lr": args.lr,
+        "batch_size": args.batch_size,
+        "eval_full": args.eval_full,
+        "graph_emb_cache_path": os.path.abspath(gcache) if gcache else "",
+        "no_graph_emb_cache": args.no_graph_emb_cache,
+        "gin_hidden_dim": args.gin_hidden_dim,
+        "model_cfg": _model_cfg_to_dict(model_cfg),
+    }
+
+
 LABEL_NAMES = ["area", "delay"]
 
 
@@ -335,13 +391,14 @@ def train_one_epoch(
 
 
 @torch.no_grad()
-def evaluate(
+def forward_collect_predictions(
     model: nn.Module,
     loader: DataLoader,
     device: str,
     normalizer: Optional[LabelNormalizer],
     g_emb_cache: Optional[Dict[int, torch.Tensor]] = None,
-) -> Dict[str, Any]:
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """返回反归一化后的 pred/true 与 gid，供 evaluate 或下游分析复用。"""
     model.eval()
     preds: List[torch.Tensor] = []
     trues: List[torch.Tensor] = []
@@ -369,6 +426,20 @@ def evaluate(
     pred = torch.cat(preds, dim=0)
     true = torch.cat(trues, dim=0)
     gids = torch.cat(gids_list, dim=0)
+    return pred, true, gids
+
+
+@torch.no_grad()
+def evaluate(
+    model: nn.Module,
+    loader: DataLoader,
+    device: str,
+    normalizer: Optional[LabelNormalizer],
+    g_emb_cache: Optional[Dict[int, torch.Tensor]] = None,
+) -> Dict[str, Any]:
+    pred, true, gids = forward_collect_predictions(
+        model, loader, device, normalizer, g_emb_cache=g_emb_cache
+    )
     return compute_metrics_per_circuit(pred, true, gids, LABEL_NAMES)
 
 
@@ -447,6 +518,7 @@ def main() -> None:
   模型结构参数需与预训练 checkpoint 一致 (脚本会从 ckpt 读取 num_bins 等)。
   默认对每个 gid 预计算 GIN+pool 图向量并复用（大幅减轻 CPU 上重复大图前向）；
   可用 --graph_emb_cache_path 保存/加载 .pt，或 --no_graph_emb_cache 关闭。
+  加 --eval_full 可在该电路全部 CSV 行上额外算 pooled R² / MAPE / Pearson（含曾用于训练的行）。
 """,
     )
     parser.add_argument("--checkpoint", type=str, required=True)
@@ -504,6 +576,11 @@ def main() -> None:
         default="",
         help="可选：.pt 路径。若存在且含当前电路全部 gid 则直接加载；否则预计算后写入。",
     )
+    parser.add_argument(
+        "--eval_full",
+        action="store_true",
+        help="在该电路 CSV 全部样本上额外评估（含训练行；R²/MAPE/Pearson 为全样本 pooled，见 metrics_*_full）",
+    )
 
     args = parser.parse_args()
 
@@ -550,6 +627,15 @@ def main() -> None:
         num_workers=args.num_workers,
         collate_fn=collate_circuit_seq,
     )
+    full_loader: Optional[DataLoader] = None
+    if args.eval_full:
+        full_loader = DataLoader(
+            circuit_ds,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+            collate_fn=collate_circuit_seq,
+        )
 
     # Normalizer
     normalizer: Optional[LabelNormalizer] = None
@@ -615,6 +701,12 @@ def main() -> None:
     )
     metrics_before = evaluate(model, test_loader, device, normalizer, g_emb_cache=g_emb_cache)
     print("[eval] baseline done", flush=True)
+    metrics_before_full: Optional[Dict[str, Any]] = None
+    if full_loader is not None:
+        n_f = len(circuit_ds)
+        print(f"[eval] baseline on FULL ({n_f} samples, 含训练行)...", flush=True)
+        metrics_before_full = evaluate(model, full_loader, device, normalizer, g_emb_cache=g_emb_cache)
+        print("[eval] baseline full done", flush=True)
 
     # LoRA（注入后再次 .to(device)，与 LoRALinear 内 device 对齐形成双保险）
     setup_lora(model, args.lora_r, args.lora_alpha)
@@ -645,6 +737,23 @@ def main() -> None:
     print("[eval] after finetune on test...", flush=True)
     metrics_after = evaluate(model, test_loader, device, normalizer, g_emb_cache=g_emb_cache)
     print("[eval] after finetune done", flush=True)
+    metrics_after_full: Optional[Dict[str, Any]] = None
+    if full_loader is not None:
+        print(f"[eval] after finetune on FULL ({len(circuit_ds)} samples)...", flush=True)
+        metrics_after_full = evaluate(model, full_loader, device, normalizer, g_emb_cache=g_emb_cache)
+        print("[eval] after finetune full done", flush=True)
+
+    run_meta = _build_run_meta(args, model_cfg, train_idx)
+    lora_pt = os.path.join(args.output_dir, "lora_finetuned_model.pt")
+    torch.save(
+        {"state_dict": model.state_dict(), "meta": run_meta},
+        lora_pt,
+    )
+    meta_json_path = os.path.join(args.output_dir, "lora_run_meta.json")
+    with open(meta_json_path, "w", encoding="utf-8") as f:
+        json.dump(_metrics_to_jsonable(run_meta), f, indent=2, ensure_ascii=False)
+    print(f"[done] saved LoRA checkpoint: {lora_pt}", flush=True)
+    print(f"[done] saved run meta: {meta_json_path}", flush=True)
 
     out = {
         "circuit_name": args.circuit_name,
@@ -654,9 +763,15 @@ def main() -> None:
         "lora_alpha": args.lora_alpha,
         "epochs": args.epochs,
         "graph_emb_cache": g_emb_cache is not None,
+        "lora_finetuned_model_path": os.path.abspath(lora_pt),
+        "lora_run_meta_path": os.path.abspath(meta_json_path),
         "metrics_before": _metrics_to_jsonable(metrics_before),
         "metrics_after": _metrics_to_jsonable(metrics_after),
     }
+    if metrics_before_full is not None:
+        out["metrics_before_full"] = _metrics_to_jsonable(metrics_before_full)
+    if metrics_after_full is not None:
+        out["metrics_after_full"] = _metrics_to_jsonable(metrics_after_full)
     out_path = os.path.join(args.output_dir, "lora_finetune_metrics.json")
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(out, f, indent=2, ensure_ascii=False)
@@ -666,10 +781,24 @@ def main() -> None:
         r2 = m.get("r2_avg_over_circuits", m.get("r2_mean", 0.0))
         mape = m.get("mape_avg_over_circuits", m.get("mape_mean", 0.0))
         print(f"  [{tag}] R2_avg_over_circuits={r2:.4f} MAPE_avg_over_circuits={mape*100:.2f}% mse={m.get('mse', 0):.6f}")
+        r2_pt = m.get("r2_per_task") or []
+        mape_pt = m.get("mape_per_task") or []
+        pr_pt = m.get("pearson_per_task") or []
+        names = m.get("label_names") or LABEL_NAMES
+        for i, name in enumerate(names):
+            if i < len(r2_pt) and i < len(mape_pt):
+                pr_s = f" Pearson={pr_pt[i]:.4f}" if i < len(pr_pt) else ""
+                print(
+                    f"       {name}: R2={r2_pt[i]:.4f} MAPE={mape_pt[i]*100:.2f}%{pr_s}"
+                )
 
     print("\n=== 微调前后对比（test 子集）===")
     _summarize("before", metrics_before)
     _summarize("after ", metrics_after)
+    if metrics_before_full is not None and metrics_after_full is not None:
+        print("\n=== 全量样本（含训练行）pooled 指标 ===")
+        _summarize("before_full", metrics_before_full)
+        _summarize("after_full ", metrics_after_full)
 
 
 if __name__ == "__main__":
