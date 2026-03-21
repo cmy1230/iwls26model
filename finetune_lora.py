@@ -8,7 +8,8 @@ import argparse
 import json
 import math
 import os
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+import time
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 
 import numpy as np
 import torch
@@ -130,13 +131,14 @@ def get_circuit_dataset(
     circuit_dir: str,
     seq_dir: str,
 ) -> CircuitSeqDataset:
+    # 先全表读入并筛行，但不 preload 图，避免为整张 CSV 里所有电路加载 AAG
     ds = CircuitSeqDataset(
         csv_path=csv_path,
         circuit_dir=circuit_dir,
         seq_dir=seq_dir,
         use_header=True,
         check_paths=False,
-        preload_graphs=True,
+        preload_graphs=False,
         labels=["area", "delay"],
     )
     col = ds.circuit_col
@@ -147,7 +149,17 @@ def get_circuit_dataset(
             f"No rows where '{col}' contains {circuit_name!r}. "
             f"Example values: {ds.df[col].head(5).tolist()}"
         )
-    return ds.make_subset(sub)
+    # 仅针对目标电路子集构建 Dataset，graph_pool 只含该电路对应的一个（或少数）AAG
+    return CircuitSeqDataset(
+        csv_path=csv_path,
+        circuit_dir=circuit_dir,
+        seq_dir=seq_dir,
+        use_header=True,
+        check_paths=False,
+        preload_graphs=True,
+        df=sub,
+        labels=["area", "delay"],
+    )
 
 
 def split_train_test(
@@ -161,6 +173,80 @@ def split_train_test(
     return Subset(circuit_ds, tr_indices), Subset(circuit_ds, te_indices)
 
 
+def _unwrap_base_dataset(ds: Union[CircuitSeqDataset, Subset]) -> CircuitSeqDataset:
+    cur: Any = ds
+    while isinstance(cur, Subset):
+        cur = cur.dataset
+    return cur
+
+
+@torch.no_grad()
+def precompute_gid_g_emb(
+    model: TopCircuitSeqModel,
+    base_ds: CircuitSeqDataset,
+    gids: Sequence[int],
+    device: Union[str, torch.device],
+) -> Dict[int, torch.Tensor]:
+    """对每个 gid 跑一次 GIN+pool，得到 (1, H) 的 CPU tensor，供本脚本内复用。"""
+    model.eval()
+    out: Dict[int, torch.Tensor] = {}
+    dev = torch.device(device) if not isinstance(device, torch.device) else device
+    for gid in gids:
+        g = base_ds._get_graph(int(gid))
+        g = g.to(dev)
+        h0 = g.ndata["nf"].to(torch.float32)
+        node_emb = model.gin(g, h0)
+        ge = model._graph_pool(g, node_emb)
+        out[int(gid)] = ge.detach().cpu()
+    return out
+
+
+def batch_g_emb_from_cache(
+    batch: Dict[str, Any],
+    cache: Dict[int, torch.Tensor],
+    device: Union[str, torch.device],
+) -> torch.Tensor:
+    """按 batch['gid'] 拼出 (B, H)。"""
+    gids = batch["gid"]
+    if not torch.is_tensor(gids):
+        gids = torch.tensor(gids, dtype=torch.long)
+    rows: List[torch.Tensor] = []
+    for i in range(int(gids.shape[0])):
+        gid = int(gids[i].item())
+        if gid not in cache:
+            raise KeyError(f"gid {gid} missing from g_emb cache (keys={sorted(cache.keys())})")
+        rows.append(cache[gid])
+    return torch.cat(rows, dim=0).to(device=device, dtype=torch.float32)
+
+
+def _save_g_emb_cache_file(path: str, cache: Dict[int, torch.Tensor], meta: Dict[str, Any]) -> None:
+    torch.save({"meta": meta, "emb": {str(k): v for k, v in cache.items()}}, path)
+
+
+def _try_load_g_emb_cache_file(
+    path: str,
+    expect_hidden: int,
+    need_gids: Set[int],
+) -> Optional[Dict[int, torch.Tensor]]:
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        obj = torch.load(path, map_location="cpu")
+    except Exception:
+        return None
+    emb = obj.get("emb") if isinstance(obj, dict) else None
+    if not isinstance(emb, dict):
+        return None
+    cache = {int(k): v for k, v in emb.items()}
+    if not need_gids.issubset(cache.keys()):
+        return None
+    for gid in need_gids:
+        t = cache[gid]
+        if t.ndim != 2 or t.shape[-1] != expect_hidden:
+            return None
+    return cache
+
+
 # -----------------------------
 # Block 3: 训练与评估
 # -----------------------------
@@ -171,6 +257,7 @@ def train_one_epoch(
     device: str,
     normalizer: Optional[LabelNormalizer],
     bin_manager: Optional[QuantileBinManager],
+    g_emb_cache: Optional[Dict[int, torch.Tensor]] = None,
 ) -> float:
     """MSE + 0.5 × CE（有 logits 时）；梯度裁剪 1.0。任务权重与 train.py 一致 (area=1, delay=3)。"""
     model.train()
@@ -190,10 +277,14 @@ def train_one_epoch(
             y_classification = None
 
         optimizer.zero_grad(set_to_none=True)
-        g = batch["g"].to(device)
         seq = batch["seq"].to(device)
         seq_len = batch["seq_len"].to(device)
-        out = model(g, seq, seq_len, target_bins=y_classification)
+        if g_emb_cache is not None:
+            g_emb_b = batch_g_emb_from_cache(batch, g_emb_cache, device)
+            out = model(None, seq, seq_len, target_bins=y_classification, g_emb=g_emb_b)
+        else:
+            g = batch["g"].to(device)
+            out = model(g, seq, seq_len, target_bins=y_classification)
         values, logits = out
         loss = combined_loss(
             values,
@@ -219,6 +310,7 @@ def evaluate(
     loader: DataLoader,
     device: str,
     normalizer: Optional[LabelNormalizer],
+    g_emb_cache: Optional[Dict[int, torch.Tensor]] = None,
 ) -> Dict[str, Any]:
     model.eval()
     preds: List[torch.Tensor] = []
@@ -226,11 +318,15 @@ def evaluate(
     gids_list: List[torch.Tensor] = []
 
     for batch in loader:
-        g = batch["g"].to(device)
         seq = batch["seq"].to(device)
         seq_len = batch["seq_len"].to(device)
         y = _extract_labels_from_batch(batch, LABEL_NAMES, device)
-        out = model(g, seq, seq_len, target_bins=None)
+        if g_emb_cache is not None:
+            g_emb_b = batch_g_emb_from_cache(batch, g_emb_cache, device)
+            out = model(None, seq, seq_len, target_bins=None, g_emb=g_emb_b)
+        else:
+            g = batch["g"].to(device)
+            out = model(g, seq, seq_len, target_bins=None)
         p = out[0] if isinstance(out, (tuple, list)) else out
         if p.ndim == 3 and p.shape[-1] == 1:
             p = p.squeeze(-1)
@@ -300,7 +396,29 @@ def _collect_train_labels(train_ds: Subset, label_names: List[str]) -> np.ndarra
 # Block 4: main
 # -----------------------------
 def main() -> None:
-    parser = argparse.ArgumentParser(description="LoRA finetune on a single circuit (subset)")
+    parser = argparse.ArgumentParser(
+        description="LoRA finetune on a single circuit (subset)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  python finetune_lora.py \\
+    --checkpoint ckpt/model.pt \\
+    --csv data/train.csv \\
+    --circuit_name my_design \\
+    --circuit_dir ./graphs \\
+    --seq_dir ./seqs \\
+    --train_n 32 \\
+    --normalizer_path ckpt/label_norm.json \\
+    --bin_manager_path ckpt/quantile_bins.json
+
+说明:
+  --circuit_name 在 CSV 的电路名列中做子串匹配, 筛出该电路所有行;
+  --train_n 为多样性采样得到的训练条数, 其余行作为 test;
+  模型结构参数需与预训练 checkpoint 一致 (脚本会从 ckpt 读取 num_bins 等)。
+  默认对每个 gid 预计算 GIN+pool 图向量并复用（大幅减轻 CPU 上重复大图前向）；
+  可用 --graph_emb_cache_path 保存/加载 .pt，或 --no_graph_emb_cache 关闭。
+""",
+    )
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--csv", type=str, required=True)
     parser.add_argument("--circuit_name", type=str, required=True)
@@ -319,6 +437,12 @@ def main() -> None:
     parser.add_argument("--output_dir", type=str, default="./lora_finetune_out")
     parser.add_argument("--device", type=str, default="")
     parser.add_argument("--num_workers", type=int, default=0)
+    parser.add_argument(
+        "--no_cudnn",
+        action="store_true",
+        help="关闭 cuDNN 卷积（用原生 CUDA 实现，略慢），可规避 "
+        "'Unable to find a valid cuDNN algorithm to run convolution'",
+    )
 
     # 模型结构（需与 checkpoint 一致）
     parser.add_argument("--gin_in_dim", type=int, default=8)
@@ -339,11 +463,30 @@ def main() -> None:
     parser.add_argument("--ens_dropout", type=float, default=0.0)
     parser.add_argument("--ens_attn_dropout", type=float, default=0.0)
     parser.add_argument("--graph_pool", type=str, default="mean")
+    parser.add_argument(
+        "--no_graph_emb_cache",
+        action="store_true",
+        help="禁用按 gid 预计算并缓存 GIN+pool 图向量（每步重跑整张图，较慢）",
+    )
+    parser.add_argument(
+        "--graph_emb_cache_path",
+        type=str,
+        default="",
+        help="可选：.pt 路径。若存在且含当前电路全部 gid 则直接加载；否则预计算后写入。",
+    )
 
     args = parser.parse_args()
 
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     num_tasks = len(LABEL_NAMES)
+
+    if torch.cuda.is_available() and str(device).startswith("cuda"):
+        if args.no_cudnn:
+            torch.backends.cudnn.enabled = False
+            print("[cuda] cudnn.enabled=False (--no_cudnn)，避免部分环境下 cuDNN 选算法失败")
+        else:
+            torch.backends.cudnn.enabled = True
+            torch.backends.cudnn.benchmark = True
 
     os.makedirs(args.output_dir, exist_ok=True)
 
@@ -393,10 +536,55 @@ def main() -> None:
 
     model_cfg = _build_model_cfg(args, num_tasks=num_tasks)
     model = TopCircuitSeqModel(model_cfg).to(device)
-    load_pt_checkpoint(model, args.checkpoint, map_location=device)
+    try:
+        load_pt_checkpoint(model, args.checkpoint, map_location=device, ckpt=ckpt_raw)
+    except TypeError:
+        load_pt_checkpoint(model, args.checkpoint, map_location=device)
+    print(f"[model] loaded on {device!r}", flush=True)
+
+    g_emb_cache: Optional[Dict[int, torch.Tensor]] = None
+    if not args.no_graph_emb_cache:
+        base_ds = _unwrap_base_dataset(circuit_ds)
+        need_gids = {int(x) for x in circuit_ds.df["gid"].tolist()}
+        gids_sorted = sorted(need_gids)
+        cache_path = (args.graph_emb_cache_path or "").strip()
+        loaded: Optional[Dict[int, torch.Tensor]] = None
+        if cache_path:
+            loaded = _try_load_g_emb_cache_file(cache_path, args.gin_hidden_dim, need_gids)
+        if loaded is not None:
+            g_emb_cache = loaded
+            print(f"[g_emb] loaded from {cache_path} ({len(g_emb_cache)} gids)", flush=True)
+        else:
+            print(f"[g_emb] precomputing GIN+pool for gids={gids_sorted} ...", flush=True)
+            t0 = time.perf_counter()
+            g_emb_cache = precompute_gid_g_emb(model, base_ds, gids_sorted, device)
+            print(
+                f"[g_emb] precompute done in {time.perf_counter() - t0:.2f}s (CPU tensors)",
+                flush=True,
+            )
+            if cache_path:
+                _save_g_emb_cache_file(
+                    cache_path,
+                    g_emb_cache,
+                    {
+                        "checkpoint": os.path.abspath(args.checkpoint),
+                        "gin_hidden_dim": args.gin_hidden_dim,
+                        "gids": gids_sorted,
+                    },
+                )
+                print(f"[g_emb] saved to {cache_path}", flush=True)
+    else:
+        print("[g_emb] cache disabled (--no_graph_emb_cache)", flush=True)
 
     # -------- 微调前（基座 checkpoint）--------
-    metrics_before = evaluate(model, test_loader, device, normalizer)
+    n_te = len(test_ds)
+    n_bt = (n_te + args.batch_size - 1) // max(1, args.batch_size)
+    print(
+        f"[eval] baseline on test: {n_te} samples, ~{n_bt} batches (CPU 上可能很慢，请耐心等待)",
+        flush=True,
+    )
+    metrics_before = evaluate(model, test_loader, device, normalizer, g_emb_cache=g_emb_cache)
+    print("[eval] baseline done", flush=True)
 
     # LoRA
     setup_lora(model, args.lora_r, args.lora_alpha)
@@ -417,11 +605,15 @@ def main() -> None:
             print(f"[bin] fitted on train subset, saved {p}")
 
     for epoch in range(1, args.epochs + 1):
-        loss = train_one_epoch(model, train_loader, opt, device, normalizer, bin_manager)
+        loss = train_one_epoch(
+            model, train_loader, opt, device, normalizer, bin_manager, g_emb_cache=g_emb_cache
+        )
         if epoch == 1 or epoch % max(1, args.epochs // 10) == 0 or epoch == args.epochs:
             print(f"[epoch {epoch}/{args.epochs}] train_loss={loss:.6f}")
 
-    metrics_after = evaluate(model, test_loader, device, normalizer)
+    print("[eval] after finetune on test...", flush=True)
+    metrics_after = evaluate(model, test_loader, device, normalizer, g_emb_cache=g_emb_cache)
+    print("[eval] after finetune done", flush=True)
 
     out = {
         "circuit_name": args.circuit_name,
@@ -430,6 +622,7 @@ def main() -> None:
         "lora_r": args.lora_r,
         "lora_alpha": args.lora_alpha,
         "epochs": args.epochs,
+        "graph_emb_cache": g_emb_cache is not None,
         "metrics_before": _metrics_to_jsonable(metrics_before),
         "metrics_after": _metrics_to_jsonable(metrics_after),
     }

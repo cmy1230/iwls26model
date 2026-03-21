@@ -101,6 +101,8 @@ class CircuitSeqDataset(Dataset):
       - Supports circuit_dir / seq_dir to resolve relative paths.
       - Optimization 1: preload graphs, build gid column, graph_pool shared across subsets.
       - NEW: configurable regression labels via labels=[...]
+      - Optional ``df``: 若传入，则不再读 CSV；df 须已等价于内部「去 Failed + resolve 路径」后的结果；
+        用于只 preload 子集涉及电路的 AAG（如单电路微调）。
     """
 
     def __init__(
@@ -112,6 +114,8 @@ class CircuitSeqDataset(Dataset):
         use_header: bool = True,
         check_paths: bool = False,
         preload_graphs: bool = True,
+        # 若提供，则不再 read_csv；df 须已通过「去 Failed + 路径 resolve」处理（与 self.df 一致）
+        df: Optional["pd.DataFrame"] = None,
 
         # if CSV has header and you want explicit col names, you can set these:
         circuit_col: Optional[str] = None,
@@ -131,7 +135,13 @@ class CircuitSeqDataset(Dataset):
         self.circuit_dir = circuit_dir
         self.seq_dir = seq_dir
 
-        df = pd.read_csv(csv_path, header=0 if use_header else None)
+        input_df_provided = df is not None
+        if df is not None:
+            df = df.copy().reset_index(drop=True)
+            if "gid" in df.columns:
+                df = df.drop(columns=["gid"])
+        else:
+            df = pd.read_csv(csv_path, header=0 if use_header else None)
 
         # decide columns
         if use_header:
@@ -177,23 +187,22 @@ class CircuitSeqDataset(Dataset):
         }
 
         # -----------------------------
-        # filter Failed (case-insensitive)
+        # filter Failed + resolve paths（若 df 由外部传入，则视为已处理好，跳过）
         # -----------------------------
-        status_series = df[self.status_col].astype(str).str.strip().str.lower()
-        df_ok = df[status_series != "failed"].reset_index(drop=True)
+        if input_df_provided:
+            self.df = df
+        else:
+            status_series = df[self.status_col].astype(str).str.strip().str.lower()
+            df_ok = df[status_series != "failed"].reset_index(drop=True)
 
-        # -----------------------------
-        # resolve paths into absolute/usable paths
-        # store back into df to avoid repeating join cost
-        # -----------------------------
-        df_ok = df_ok.copy()
-        df_ok[self.circuit_col] = df_ok[self.circuit_col].astype(str).map(
-            lambda p: _resolve_circuit_path(self.circuit_dir, p)
-        )
-        df_ok[self.seq_col] = df_ok[self.seq_col].astype(str).map(
-            lambda p: _resolve_path(self.seq_dir, p)
-        )
-        self.df = df_ok
+            df_ok = df_ok.copy()
+            df_ok[self.circuit_col] = df_ok[self.circuit_col].astype(str).map(
+                lambda p: _resolve_circuit_path(self.circuit_dir, p)
+            )
+            df_ok[self.seq_col] = df_ok[self.seq_col].astype(str).map(
+                lambda p: _resolve_path(self.seq_dir, p)
+            )
+            self.df = df_ok
 
         # optional path sanity check (sample a few rows)
         if check_paths and len(self.df) > 0:

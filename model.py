@@ -102,32 +102,47 @@ class TopCircuitSeqModel(nn.Module):
 
     def forward(
         self,
-        g: dgl.DGLGraph,
+        g: Optional[dgl.DGLGraph],
         seq: torch.Tensor,
         seq_len: Optional[torch.Tensor] = None,
         target_bins: Optional[torch.Tensor] = None,
+        g_emb: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
         Forward pass.
 
         Args:
-            g: batched DGLGraph
+            g: batched DGLGraph；若提供 ``g_emb`` 则可为 None（跳过 GIN，用于同电路预计算缓存）。
             seq: (B, L, seq_in_dim) 序列特征
             seq_len: (B,) 序列长度（可选）
             target_bins: (B, T) 每个样本每个任务的分桶索引，训练时提供用于 teacher forcing。
                         如果为 None，则使用 classifier 的 argmax 选择分支（推理模式）。
+            g_emb: 可选，形状 (B, gin_hidden_dim)。与 ``g`` 二选一：提供时直接使用预计算的图级向量。
 
         Returns:
             values: (B, T, out_dim) 回归输出
             logits: (B, T, C) 分类 logits，如果 num_classes == 1 则为 None
         """
         # --------- Graph encoder ---------
-        if "nf" not in g.ndata:
-            raise KeyError("Graph missing node feature 'nf' in g.ndata. Please set g.ndata['nf'] = ...")
+        if g_emb is not None:
+            g_emb = g_emb.to(device=seq.device, dtype=torch.float32)
+            if g_emb.ndim != 2 or g_emb.shape[0] != seq.shape[0]:
+                raise ValueError(
+                    f"g_emb must be (B, gin_hidden_dim), got {tuple(g_emb.shape)} for B={seq.shape[0]}"
+                )
+            if g_emb.shape[1] != self.cfg.gin_hidden_dim:
+                raise ValueError(
+                    f"g_emb last dim must be gin_hidden_dim={self.cfg.gin_hidden_dim}, got {g_emb.shape[1]}"
+                )
+        else:
+            if g is None:
+                raise ValueError("forward requires either batched graph g or tensor g_emb")
+            if "nf" not in g.ndata:
+                raise KeyError("Graph missing node feature 'nf' in g.ndata. Please set g.ndata['nf'] = ...")
 
-        h0 = g.ndata["nf"].to(torch.float32)   # (N, gin_in_dim)
-        node_emb = self.gin(g, h0)             # (N, gin_hidden_dim)
-        g_emb = self._graph_pool(g, node_emb)  # (B, gin_hidden_dim)
+            h0 = g.ndata["nf"].to(torch.float32)   # (N, gin_in_dim)
+            node_emb = self.gin(g, h0)             # (N, gin_hidden_dim)
+            g_emb = self._graph_pool(g, node_emb)  # (B, gin_hidden_dim)
 
         # --------- Seq encoder ---------
         s_emb = self.lstm(seq, seq_len)        # (B, seq_hidden_dim)
@@ -233,6 +248,7 @@ def load_pt_checkpoint(
     pt_path: str,
     map_location: Optional[Union[str, torch.device]] = None,
     strict: bool = True,
+    ckpt: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Load weights from a .pt checkpoint into `model`.
@@ -241,11 +257,14 @@ def load_pt_checkpoint(
       1) {"model": state_dict, ...}
       2) {"state_dict": state_dict, ...}
       3) state_dict directly
-    """
-    if not os.path.exists(pt_path):
-        raise FileNotFoundError(f"Checkpoint not found: {pt_path}")
 
-    ckpt = torch.load(pt_path, map_location=map_location)
+    If ``ckpt`` is provided (e.g. already loaded via ``torch.load``), it is used
+    instead of reading ``pt_path`` again (avoids double disk I/O).
+    """
+    if ckpt is None:
+        if not os.path.exists(pt_path):
+            raise FileNotFoundError(f"Checkpoint not found: {pt_path}")
+        ckpt = torch.load(pt_path, map_location=map_location)
     meta: Dict[str, Any] = {}
 
     if isinstance(ckpt, dict):
