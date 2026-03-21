@@ -820,8 +820,9 @@ def main(rank=None, world_size=None, circuit_filter: Optional[str] = None):
 
     circuit_name_filter = getattr(cfg, "circuit_name_filter", None) or ""
     save_name = f"iwls26_{circuit_name_filter}.pt"
-    normalizer_name = f"iwls26_{circuit_name_filter}.json"
-    bin_manager_name = f"iwls26_{circuit_name_filter}.json"
+    # 必须与 bin 分文件，否则会互相覆盖（先存 bins 再存 normalizer 会把 bins 冲掉）
+    normalizer_name = f"iwls26_{circuit_name_filter}_normalizer.json"
+    bin_manager_name = f"iwls26_{circuit_name_filter}_bins.json"
 
     # -----------------------------
     # Dataset + Split (within_circuit)
@@ -1134,6 +1135,7 @@ def main(rank=None, world_size=None, circuit_filter: Optional[str] = None):
                         "use_normalization": cfg.use_label_normalization,
                         "use_quantile_bins": cfg.use_quantile_bins,
                         "num_bins": cfg.num_bins,
+                        "normalizer_path": os.path.join(cfg.save_dir, normalizer_name) if cfg.use_label_normalization else None,
                         "bin_manager_path": os.path.join(cfg.save_dir, bin_manager_name) if cfg.use_quantile_bins else None,
                     },
                     best_path,
