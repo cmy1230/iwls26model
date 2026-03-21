@@ -396,7 +396,7 @@ def main() -> None:
     load_pt_checkpoint(model, args.checkpoint, map_location=device)
 
     # -------- 微调前（基座 checkpoint）--------
-    metrics_before = evaluate(model, test_loader, device, normalizer, label_names)
+    metrics_before = evaluate(model, test_loader, device, normalizer)
 
     # LoRA
     setup_lora(model, args.lora_r, args.lora_alpha)
