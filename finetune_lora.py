@@ -75,6 +75,21 @@ def combined_loss(
     return mse + alpha * ce_loss
 
 
+def ranking_loss(pred: torch.Tensor, y: torch.Tensor, margin: float = 0.01) -> torch.Tensor:
+    """
+    Pairwise ranking loss：对 batch 内所有样本对，
+    若真值 y_i > y_j，则要求 pred_i > pred_j。
+    pred, y: (B, T)，均在同一空间（归一化或原始）。
+    """
+    diff_y = y.unsqueeze(0) - y.unsqueeze(1)  # (B, B, T)
+    diff_p = pred.unsqueeze(0) - pred.unsqueeze(1)  # (B, B, T)
+    loss = torch.clamp(margin - torch.sign(diff_y) * diff_p, min=0.0)
+    mask = torch.abs(diff_y) > 1e-6  # 只统计真值不同的 pair
+    if mask.any():
+        return loss[mask].mean()
+    return loss.mean()
+
+
 # -----------------------------
 # Block 1: LoRA 模块
 # -----------------------------
@@ -87,8 +102,12 @@ class LoRALinear(nn.Module):
 
         in_f = original_linear.in_features
         out_f = original_linear.out_features
-        self.lora_A = nn.Linear(in_f, r, bias=False)
-        self.lora_B = nn.Linear(r, out_f, bias=False)
+        # 必须在 original_linear 所在 device/dtype 上创建，否则 model 已 .cuda() 后注入 LoRA 时
+        # lora 权重会留在 CPU，forward 会报 cuda/cpu 混用。
+        dev = original_linear.weight.device
+        dt = original_linear.weight.dtype
+        self.lora_A = nn.Linear(in_f, r, bias=False).to(device=dev, dtype=dt)
+        self.lora_B = nn.Linear(r, out_f, bias=False).to(device=dev, dtype=dt)
         nn.init.kaiming_uniform_(self.lora_A.weight, a=math.sqrt(5))
         nn.init.zeros_(self.lora_B.weight)
 
@@ -99,9 +118,18 @@ class LoRALinear(nn.Module):
 
 
 def inject_lora(module: nn.Module, r: int, lora_alpha: float) -> None:
-    """递归遍历 module：Linear -> LoRALinear；跳过已注入的 LoRALinear 内部。"""
+    """递归遍历 module：Linear -> LoRALinear；跳过已注入的 LoRALinear 内部。
+
+    注意：不要替换 nn.MultiheadAttention 内部的 Linear。
+    PyTorch 的 MultiheadAttention 在 forward 里用 F.linear(x, out_proj.weight, out_proj.bias)
+    直接读子模块的 .weight，而 LoRALinear 把权重放在 original_linear 里；若替换 out_proj
+    会触发 AttributeError，且即使用 property 转发，也会绕过 LoRALinear.forward，LoRA 不生效。
+    """
     for name, child in list(module.named_children()):
         if isinstance(child, LoRALinear):
+            continue
+        # 保留 MHA 内部结构不变，仅对其外的 Linear 注入 LoRA
+        if isinstance(child, nn.MultiheadAttention):
             continue
         if isinstance(child, nn.Linear):
             setattr(module, name, LoRALinear(child, r, lora_alpha))
@@ -113,6 +141,7 @@ def setup_lora(model: TopCircuitSeqModel, r: int, lora_alpha: float) -> int:
     for p in model.parameters():
         p.requires_grad = False
 
+    inject_lora(model.lstm, r, lora_alpha)  # 适配序列编码器
     inject_lora(model.feature_extractors, r, lora_alpha)
     inject_lora(model.feature_sharing, r, lora_alpha)
     inject_lora(model.ensembles, r, lora_alpha)
@@ -294,6 +323,7 @@ def train_one_epoch(
             alpha=ce_alpha,
             task_weights=task_weights,
         )
+        loss = loss + 0.5 * ranking_loss(values.squeeze(-1), y_for_loss)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
@@ -586,8 +616,9 @@ def main() -> None:
     metrics_before = evaluate(model, test_loader, device, normalizer, g_emb_cache=g_emb_cache)
     print("[eval] baseline done", flush=True)
 
-    # LoRA
+    # LoRA（注入后再次 .to(device)，与 LoRALinear 内 device 对齐形成双保险）
     setup_lora(model, args.lora_r, args.lora_alpha)
+    model.to(device)
     trainable = [p for p in model.parameters() if p.requires_grad]
     opt = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=0.0)
 
