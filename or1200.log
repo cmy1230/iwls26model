@@ -1,0 +1,614 @@
+======== 2026-03-21T13:40:58Z  or1200 -> ./log/or1200.log ========
+[INFO] 检测到 2 张 GPU，通过 mp.spawn 启动多卡并行训练 (port=37549) ...
+[DDP] world_size=2, using NCCL backend
+[INFO] circuit_name_filter='or1200' (子串匹配，仅训练名称包含该串的电路样本)
+[preload] loading 1 graphs...
+[preload] gid=0 size=0.4MB path=/home/yfdai/asap/data/aag/or1200.aag
+[INFO] circuit_name_filter='or1200': rows 58453 -> 1099 (preload graphs for subset only)
+[preload] loading 1 graphs...
+[preload] gid=0 size=0.4MB path=/home/yfdai/asap/data/aag/or1200.aag
+[preload] gid=0 done in 5.99s | nodes=47604 edges=70685
+[preload] gid=0 done in 8.05s | nodes=47604 edges=70685
+
+[INFO] Computing quantile bin boundaries from FULL dataset (ds.df) ...
+[INFO] Quantile bin manager fitted on full dataset, saved to ./ckpt/iwls26_or1200_bins.json
+[INFO] Full dataset bin distribution (n=1099, num_bins=8):
+  area: boundaries=['359.2850', '368.7850', '377.6275', '389.7900', '407.6600', '422.1900', '438.3675']
+    bin_0: count=138 (12.6%)
+    bin_1: count=137 (12.5%)
+    bin_2: count=137 (12.5%)
+    bin_3: count=138 (12.6%)
+    bin_4: count=137 (12.5%)
+    bin_5: count=137 (12.5%)
+    bin_6: count=137 (12.5%)
+    bin_7: count=138 (12.6%)
+  delay: boundaries=['239.8475', '250.6300', '253.8100', '265.4200', '293.4075', '336.8250', '352.2300']
+    bin_0: count=138 (12.6%)
+    bin_1: count=173 (15.7%)
+    bin_2: count=112 (10.2%)
+    bin_3: count=127 (11.6%)
+    bin_4: count=137 (12.5%)
+    bin_5: count=137 (12.5%)
+    bin_6: count=137 (12.5%)
+    bin_7: count=138 (12.6%)
+
+[INFO] Computing label statistics from train_ds ONLY ...
+LabelNormalizer stats (2 labels, 659 samples):
+  transform: log1p enabled labels = ['area', 'delay']
+      area: use_log1p=True mean=    5.980064  std=    0.079454  min=    5.839391  max=    6.177591
+     delay: use_log1p=True mean=    5.652300  std=    0.156709  min=    5.421729  max=    5.967300
+[LabelNormalizer] Saved to ./ckpt/iwls26_or1200_normalizer.json
+
+[INFO] Bin distribution across splits (num_bins=8, stratify by circuit):
+  [TRAIN] n_samples=659, n_circuits=1
+    area: boundaries=['359.2850', '368.7850', '377.6275', '389.7900', '407.6600', '422.1900', '438.3675']
+      bin_0: count=85 (12.9%)
+      bin_1: count=83 (12.6%)
+      bin_2: count=86 (13.1%)
+      bin_3: count=79 (12.0%)
+      bin_4: count=80 (12.1%)
+      bin_5: count=80 (12.1%)
+      bin_6: count=87 (13.2%)
+      bin_7: count=79 (12.0%)
+    delay: boundaries=['239.8475', '250.6300', '253.8100', '265.4200', '293.4075', '336.8250', '352.2300']
+      bin_0: count=79 (12.0%)
+      bin_1: count=64 (9.7%)
+      bin_2: count=104 (15.8%)
+      bin_3: count=83 (12.6%)
+      bin_4: count=85 (12.9%)
+      bin_5: count=83 (12.6%)
+      bin_6: count=81 (12.3%)
+      bin_7: count=80 (12.1%)
+  [VAL] n_samples=110, n_circuits=1
+    area: boundaries=['359.2850', '368.7850', '377.6275', '389.7900', '407.6600', '422.1900', '438.3675']
+      bin_0: count=19 (17.3%)
+      bin_1: count=16 (14.5%)
+      bin_2: count=10 (9.1%)
+      bin_3: count=10 (9.1%)
+      bin_4: count=13 (11.8%)
+      bin_5: count=12 (10.9%)
+      bin_6: count=21 (19.1%)
+      bin_7: count=9 (8.2%)
+    delay: boundaries=['239.8475', '250.6300', '253.8100', '265.4200', '293.4075', '336.8250', '352.2300']
+      bin_0: count=10 (9.1%)
+      bin_1: count=8 (7.3%)
+      bin_2: count=20 (18.2%)
+      bin_3: count=11 (10.0%)
+      bin_4: count=15 (13.6%)
+      bin_5: count=14 (12.7%)
+      bin_6: count=19 (17.3%)
+      bin_7: count=13 (11.8%)
+  [TEST] n_samples=330, n_circuits=1
+    area: boundaries=['359.2850', '368.7850', '377.6275', '389.7900', '407.6600', '422.1900', '438.3675']
+      bin_0: count=34 (10.3%)
+      bin_1: count=38 (11.5%)
+      bin_2: count=41 (12.4%)
+      bin_3: count=48 (14.5%)
+      bin_4: count=45 (13.6%)
+      bin_5: count=45 (13.6%)
+      bin_6: count=29 (8.8%)
+      bin_7: count=50 (15.2%)
+    delay: boundaries=['239.8475', '250.6300', '253.8100', '265.4200', '293.4075', '336.8250', '352.2300']
+      bin_0: count=49 (14.8%)
+      bin_1: count=27 (8.2%)
+      bin_2: count=62 (18.8%)
+      bin_3: count=32 (9.7%)
+      bin_4: count=38 (11.5%)
+      bin_5: count=40 (12.1%)
+      bin_6: count=37 (11.2%)
+      bin_7: count=45 (13.6%)
+
+======================================================================
+[INFO] split_mode=within_circuit  train/val/test=0.6/0.1/0.3
+[INFO] tasks=['area', 'delay']
+[INFO] max_epochs=5000, early_stop_patience=20 (val: mean R2 over area & delay, per-circuit avg)
+[INFO] use_label_normalization=True
+[INFO] use_quantile_bins=True, num_bins=8, ce_alpha=1.0
+[INFO] DDP=True world_size=2
+[INFO] batch_size=2 accum_steps=1 (eff_batch=2)
+[INFO] use_oom_fallback=True (dynamic batch size)
+[INFO] task_loss_weights={'area': 1.0, 'delay': 1.0}
+======================================================================
+
+[LabelNormalizer] Loaded from ./ckpt/iwls26_or1200_normalizer.json
+[Epoch 0001] train_loss(norm)=2.331852  val_avg_R2_mean_tasks=-0.454144
+  TRAIN mse=2311.793457 R2_avg_within_circuit=-0.3447 R2_mean=-0.3447 | area=-0.0141 delay=-0.6753 MAPE_avg_within_circuit=10.15% MAPE_mean=10.15% | area=7.16% delay=13.15%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=-0.3447 MAPE_avg=10.15% | R2: area=-0.0141 delay=-0.6753 | MAPE: area=7.16% delay=13.15%
+  VAL   mse=2572.463867 R2_avg_within_circuit=-0.4541 R2_mean=-0.4541 | area=-0.0279 delay=-0.8804 MAPE_avg_within_circuit=10.80% MAPE_mean=10.80% | area=7.32% delay=14.28%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=-0.4541 MAPE_avg=10.80% | R2: area=-0.0279 delay=-0.8804 | MAPE: area=7.32% delay=14.28%
+  -> save best: ./ckpt/iwls26_or1200.pt (best_val_avg_R2_mean_tasks=-0.454144)
+[Epoch 0002] train_loss(norm)=2.095926  val_avg_R2_mean_tasks=0.455928
+  TRAIN mse=810.928223 R2_avg_within_circuit=0.4678 R2_mean=0.4678 | area=0.4102 delay=0.5254 MAPE_avg_within_circuit=7.21% MAPE_mean=7.21% | area=4.99% delay=9.44%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.4678 MAPE_avg=7.21% | R2: area=0.4102 delay=0.5254 | MAPE: area=4.99% delay=9.44%
+  VAL   mse=786.047791 R2_avg_within_circuit=0.4559 R2_mean=0.4559 | area=0.3196 delay=0.5922 MAPE_avg_within_circuit=6.91% MAPE_mean=6.91% | area=5.43% delay=8.39%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.4559 MAPE_avg=6.91% | R2: area=0.3196 delay=0.5922 | MAPE: area=5.43% delay=8.39%
+  -> save best: ./ckpt/iwls26_or1200.pt (best_val_avg_R2_mean_tasks=0.455928)
+[Epoch 0003] train_loss(norm)=1.765010  val_avg_R2_mean_tasks=0.564893
+  TRAIN mse=519.995483 R2_avg_within_circuit=0.6348 R2_mean=0.6348 | area=0.5343 delay=0.7353 MAPE_avg_within_circuit=5.17% MAPE_mean=5.17% | area=4.11% delay=6.22%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.6348 MAPE_avg=5.17% | R2: area=0.5343 delay=0.7353 | MAPE: area=4.11% delay=6.22%
+  VAL   mse=612.764160 R2_avg_within_circuit=0.5649 R2_mean=0.5649 | area=0.4293 delay=0.7005 MAPE_avg_within_circuit=5.44% MAPE_mean=5.44% | area=4.48% delay=6.40%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.5649 MAPE_avg=5.44% | R2: area=0.4293 delay=0.7005 | MAPE: area=4.48% delay=6.40%
+  -> save best: ./ckpt/iwls26_or1200.pt (best_val_avg_R2_mean_tasks=0.564893)
+[Epoch 0004] train_loss(norm)=1.556599  val_avg_R2_mean_tasks=0.694087
+  TRAIN mse=371.953583 R2_avg_within_circuit=0.7444 R2_mean=0.7444 | area=0.6859 delay=0.8030 MAPE_avg_within_circuit=4.28% MAPE_mean=4.28% | area=3.48% delay=5.08%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.7444 MAPE_avg=4.28% | R2: area=0.6859 delay=0.8030 | MAPE: area=3.48% delay=5.08%
+  VAL   mse=492.516479 R2_avg_within_circuit=0.6941 R2_mean=0.6941 | area=0.7022 delay=0.6860 MAPE_avg_within_circuit=4.52% MAPE_mean=4.52% | area=3.52% delay=5.51%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.6941 MAPE_avg=4.52% | R2: area=0.7022 delay=0.6860 | MAPE: area=3.52% delay=5.51%
+  -> save best: ./ckpt/iwls26_or1200.pt (best_val_avg_R2_mean_tasks=0.694087)
+[Epoch 0005] train_loss(norm)=1.546496  val_avg_R2_mean_tasks=0.735702
+  TRAIN mse=423.724304 R2_avg_within_circuit=0.7526 R2_mean=0.7526 | area=0.8077 delay=0.6975 MAPE_avg_within_circuit=4.87% MAPE_mean=4.87% | area=2.70% delay=7.04%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.7526 MAPE_avg=4.87% | R2: area=0.8077 delay=0.6975 | MAPE: area=2.70% delay=7.04%
+  VAL   mse=415.289368 R2_avg_within_circuit=0.7357 R2_mean=0.7357 | area=0.7256 delay=0.7458 MAPE_avg_within_circuit=4.79% MAPE_mean=4.79% | area=3.21% delay=6.36%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.7357 MAPE_avg=4.79% | R2: area=0.7256 delay=0.7458 | MAPE: area=3.21% delay=6.36%
+  -> save best: ./ckpt/iwls26_or1200.pt (best_val_avg_R2_mean_tasks=0.735702)
+[Epoch 0006] train_loss(norm)=1.537773  val_avg_R2_mean_tasks=0.593302
+  TRAIN mse=497.328979 R2_avg_within_circuit=0.6824 R2_mean=0.6824 | area=0.6743 delay=0.6905 MAPE_avg_within_circuit=5.46% MAPE_mean=5.46% | area=3.45% delay=7.46%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.6824 MAPE_avg=5.46% | R2: area=0.6743 delay=0.6905 | MAPE: area=3.45% delay=7.46%
+  VAL   mse=614.004883 R2_avg_within_circuit=0.5933 R2_mean=0.5933 | area=0.5357 delay=0.6509 MAPE_avg_within_circuit=5.71% MAPE_mean=5.71% | area=4.06% delay=7.36%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.5933 MAPE_avg=5.71% | R2: area=0.5357 delay=0.6509 | MAPE: area=4.06% delay=7.36%
+[Epoch 0007] train_loss(norm)=1.448386  val_avg_R2_mean_tasks=0.488368
+  TRAIN mse=985.803406 R2_avg_within_circuit=0.4915 R2_mean=0.4915 | area=0.8108 delay=0.1722 MAPE_avg_within_circuit=6.59% MAPE_mean=6.59% | area=2.71% delay=10.47%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.4915 MAPE_avg=6.59% | R2: area=0.8108 delay=0.1722 | MAPE: area=2.71% delay=10.47%
+  VAL   mse=997.250427 R2_avg_within_circuit=0.4884 R2_mean=0.4884 | area=0.7928 delay=0.1839 MAPE_avg_within_circuit=6.67% MAPE_mean=6.67% | area=2.77% delay=10.57%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.4884 MAPE_avg=6.67% | R2: area=0.7928 delay=0.1839 | MAPE: area=2.77% delay=10.57%
+[Epoch 0008] train_loss(norm)=1.439419  val_avg_R2_mean_tasks=0.808878
+  TRAIN mse=282.397858 R2_avg_within_circuit=0.8248 R2_mean=0.8248 | area=0.8347 delay=0.8150 MAPE_avg_within_circuit=3.70% MAPE_mean=3.70% | area=2.47% delay=4.93%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.8248 MAPE_avg=3.70% | R2: area=0.8347 delay=0.8150 | MAPE: area=2.47% delay=4.93%
+  VAL   mse=290.964600 R2_avg_within_circuit=0.8089 R2_mean=0.8089 | area=0.7859 delay=0.8319 MAPE_avg_within_circuit=3.71% MAPE_mean=3.71% | area=2.69% delay=4.72%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8089 MAPE_avg=3.71% | R2: area=0.7859 delay=0.8319 | MAPE: area=2.69% delay=4.72%
+  -> save best: ./ckpt/iwls26_or1200.pt (best_val_avg_R2_mean_tasks=0.808878)
+[Epoch 0009] train_loss(norm)=1.442199  val_avg_R2_mean_tasks=0.820720
+  TRAIN mse=283.634094 R2_avg_within_circuit=0.8127 R2_mean=0.8127 | area=0.7912 delay=0.8343 MAPE_avg_within_circuit=4.13% MAPE_mean=4.13% | area=2.92% delay=5.35%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.8127 MAPE_avg=4.13% | R2: area=0.7912 delay=0.8343 | MAPE: area=2.92% delay=5.35%
+  VAL   mse=265.376678 R2_avg_within_circuit=0.8207 R2_mean=0.8207 | area=0.7865 delay=0.8550 MAPE_avg_within_circuit=3.98% MAPE_mean=3.98% | area=2.91% delay=5.05%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8207 MAPE_avg=3.98% | R2: area=0.7865 delay=0.8550 | MAPE: area=2.91% delay=5.05%
+  -> save best: ./ckpt/iwls26_or1200.pt (best_val_avg_R2_mean_tasks=0.820720)
+[Epoch 0010] train_loss(norm)=1.406340  val_avg_R2_mean_tasks=0.571214
+  TRAIN mse=451.754364 R2_avg_within_circuit=0.6552 R2_mean=0.6552 | area=0.4913 delay=0.8192 MAPE_avg_within_circuit=4.86% MAPE_mean=4.86% | area=4.78% delay=4.93%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.6552 MAPE_avg=4.86% | R2: area=0.4913 delay=0.8192 | MAPE: area=4.78% delay=4.93%
+  VAL   mse=524.789978 R2_avg_within_circuit=0.5712 R2_mean=0.5712 | area=0.3051 delay=0.8374 MAPE_avg_within_circuit=5.37% MAPE_mean=5.37% | area=5.72% delay=5.01%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.5712 MAPE_avg=5.37% | R2: area=0.3051 delay=0.8374 | MAPE: area=5.72% delay=5.01%
+[Epoch 0011] train_loss(norm)=1.362533  val_avg_R2_mean_tasks=0.751644
+  TRAIN mse=263.081085 R2_avg_within_circuit=0.8227 R2_mean=0.8227 | area=0.7928 delay=0.8526 MAPE_avg_within_circuit=3.65% MAPE_mean=3.65% | area=2.77% delay=4.53%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.8227 MAPE_avg=3.65% | R2: area=0.7928 delay=0.8526 | MAPE: area=2.77% delay=4.53%
+  VAL   mse=370.450714 R2_avg_within_circuit=0.7516 R2_mean=0.7516 | area=0.7089 delay=0.7943 MAPE_avg_within_circuit=3.97% MAPE_mean=3.97% | area=3.34% delay=4.61%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.7516 MAPE_avg=3.97% | R2: area=0.7089 delay=0.7943 | MAPE: area=3.34% delay=4.61%
+[Epoch 0012] train_loss(norm)=1.359704  val_avg_R2_mean_tasks=0.536620
+  TRAIN mse=645.370483 R2_avg_within_circuit=0.6531 R2_mean=0.6531 | area=0.8251 delay=0.4810 MAPE_avg_within_circuit=4.89% MAPE_mean=4.89% | area=2.53% delay=7.25%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.6531 MAPE_avg=4.89% | R2: area=0.8251 delay=0.4810 | MAPE: area=2.53% delay=7.25%
+  VAL   mse=862.383362 R2_avg_within_circuit=0.5366 R2_mean=0.5366 | area=0.7439 delay=0.3293 MAPE_avg_within_circuit=5.96% MAPE_mean=5.96% | area=3.04% delay=8.88%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.5366 MAPE_avg=5.96% | R2: area=0.7439 delay=0.3293 | MAPE: area=3.04% delay=8.88%
+[Epoch 0013] train_loss(norm)=1.315913  val_avg_R2_mean_tasks=0.744638
+  TRAIN mse=262.080170 R2_avg_within_circuit=0.8228 R2_mean=0.8228 | area=0.7915 delay=0.8541 MAPE_avg_within_circuit=3.71% MAPE_mean=3.71% | area=2.87% delay=4.55%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.8228 MAPE_avg=3.71% | R2: area=0.7915 delay=0.8541 | MAPE: area=2.87% delay=4.55%
+  VAL   mse=373.418671 R2_avg_within_circuit=0.7446 R2_mean=0.7446 | area=0.6882 delay=0.8011 MAPE_avg_within_circuit=4.14% MAPE_mean=4.14% | area=3.27% delay=5.00%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.7446 MAPE_avg=4.14% | R2: area=0.6882 delay=0.8011 | MAPE: area=3.27% delay=5.00%
+[Epoch 0014] train_loss(norm)=1.335572  val_avg_R2_mean_tasks=0.690193
+  TRAIN mse=337.069336 R2_avg_within_circuit=0.7838 R2_mean=0.7838 | area=0.7746 delay=0.7930 MAPE_avg_within_circuit=4.18% MAPE_mean=4.18% | area=2.93% delay=5.43%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.7838 MAPE_avg=4.18% | R2: area=0.7746 delay=0.7930 | MAPE: area=2.93% delay=5.43%
+  VAL   mse=478.396545 R2_avg_within_circuit=0.6902 R2_mean=0.6902 | area=0.6642 delay=0.7162 MAPE_avg_within_circuit=4.93% MAPE_mean=4.93% | area=3.54% delay=6.31%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.6902 MAPE_avg=4.93% | R2: area=0.6642 delay=0.7162 | MAPE: area=3.54% delay=6.31%
+[Epoch 0015] train_loss(norm)=1.289923  val_avg_R2_mean_tasks=0.671334
+  TRAIN mse=320.751953 R2_avg_within_circuit=0.7918 R2_mean=0.7918 | area=0.7765 delay=0.8070 MAPE_avg_within_circuit=4.03% MAPE_mean=4.03% | area=2.79% delay=5.27%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.7918 MAPE_avg=4.03% | R2: area=0.7765 delay=0.8070 | MAPE: area=2.79% delay=5.27%
+  VAL   mse=505.755188 R2_avg_within_circuit=0.6713 R2_mean=0.6713 | area=0.6408 delay=0.7018 MAPE_avg_within_circuit=5.16% MAPE_mean=5.16% | area=3.64% delay=6.67%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.6713 MAPE_avg=5.16% | R2: area=0.6408 delay=0.7018 | MAPE: area=3.64% delay=6.67%
+[Epoch 0016] train_loss(norm)=1.279534  val_avg_R2_mean_tasks=0.767856
+  TRAIN mse=261.532654 R2_avg_within_circuit=0.8319 R2_mean=0.8319 | area=0.8239 delay=0.8400 MAPE_avg_within_circuit=3.56% MAPE_mean=3.56% | area=2.45% delay=4.67%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.8319 MAPE_avg=3.56% | R2: area=0.8239 delay=0.8400 | MAPE: area=2.45% delay=4.67%
+  VAL   mse=353.708038 R2_avg_within_circuit=0.7679 R2_mean=0.7679 | area=0.7404 delay=0.7953 MAPE_avg_within_circuit=4.14% MAPE_mean=4.14% | area=3.04% delay=5.24%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.7679 MAPE_avg=4.14% | R2: area=0.7404 delay=0.7953 | MAPE: area=3.04% delay=5.24%
+[Epoch 0017] train_loss(norm)=1.305187  val_avg_R2_mean_tasks=0.746546
+  TRAIN mse=290.764343 R2_avg_within_circuit=0.8268 R2_mean=0.8268 | area=0.8570 delay=0.7965 MAPE_avg_within_circuit=3.65% MAPE_mean=3.65% | area=2.28% delay=5.01%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.8268 MAPE_avg=3.65% | R2: area=0.8570 delay=0.7965 | MAPE: area=2.28% delay=5.01%
+  VAL   mse=427.360229 R2_avg_within_circuit=0.7465 R2_mean=0.7465 | area=0.7856 delay=0.7075 MAPE_avg_within_circuit=4.35% MAPE_mean=4.35% | area=2.74% delay=5.96%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.7465 MAPE_avg=4.35% | R2: area=0.7856 delay=0.7075 | MAPE: area=2.74% delay=5.96%
+[Epoch 0018] train_loss(norm)=1.262297  val_avg_R2_mean_tasks=0.776151
+  TRAIN mse=287.939453 R2_avg_within_circuit=0.8292 R2_mean=0.8292 | area=0.8603 delay=0.7981 MAPE_avg_within_circuit=3.77% MAPE_mean=3.77% | area=2.26% delay=5.28%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.8292 MAPE_avg=3.77% | R2: area=0.8603 delay=0.7981 | MAPE: area=2.26% delay=5.28%
+  VAL   mse=357.947571 R2_avg_within_circuit=0.7762 R2_mean=0.7762 | area=0.7780 delay=0.7743 MAPE_avg_within_circuit=4.30% MAPE_mean=4.30% | area=3.00% delay=5.60%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.7762 MAPE_avg=4.30% | R2: area=0.7780 delay=0.7743 | MAPE: area=3.00% delay=5.60%
+[Epoch 0019] train_loss(norm)=1.186521  val_avg_R2_mean_tasks=0.814797
+  TRAIN mse=198.800095 R2_avg_within_circuit=0.8674 R2_mean=0.8674 | area=0.8481 delay=0.8867 MAPE_avg_within_circuit=3.22% MAPE_mean=3.22% | area=2.43% delay=4.02%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.8674 MAPE_avg=3.22% | R2: area=0.8481 delay=0.8867 | MAPE: area=2.43% delay=4.02%
+  VAL   mse=263.902252 R2_avg_within_circuit=0.8148 R2_mean=0.8148 | area=0.7623 delay=0.8673 MAPE_avg_within_circuit=3.88% MAPE_mean=3.88% | area=3.13% delay=4.63%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8148 MAPE_avg=3.88% | R2: area=0.7623 delay=0.8673 | MAPE: area=3.13% delay=4.63%
+[Epoch 0020] train_loss(norm)=1.197174  val_avg_R2_mean_tasks=0.801198
+  TRAIN mse=191.758423 R2_avg_within_circuit=0.8792 R2_mean=0.8792 | area=0.8809 delay=0.8776 MAPE_avg_within_circuit=3.13% MAPE_mean=3.13% | area=2.08% delay=4.19%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.8792 MAPE_avg=3.13% | R2: area=0.8809 delay=0.8776 | MAPE: area=2.08% delay=4.19%
+  VAL   mse=315.418060 R2_avg_within_circuit=0.8012 R2_mean=0.8012 | area=0.7987 delay=0.8037 MAPE_avg_within_circuit=4.05% MAPE_mean=4.05% | area=2.84% delay=5.26%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8012 MAPE_avg=4.05% | R2: area=0.7987 delay=0.8037 | MAPE: area=2.84% delay=5.26%
+[Epoch 0021] train_loss(norm)=1.130882  val_avg_R2_mean_tasks=0.821848
+  TRAIN mse=168.213989 R2_avg_within_circuit=0.8939 R2_mean=0.8939 | area=0.8947 delay=0.8931 MAPE_avg_within_circuit=2.91% MAPE_mean=2.91% | area=1.98% delay=3.83%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.8939 MAPE_avg=2.91% | R2: area=0.8947 delay=0.8931 | MAPE: area=1.98% delay=3.83%
+  VAL   mse=288.473358 R2_avg_within_circuit=0.8218 R2_mean=0.8218 | area=0.8293 delay=0.8144 MAPE_avg_within_circuit=3.84% MAPE_mean=3.84% | area=2.68% delay=5.00%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8218 MAPE_avg=3.84% | R2: area=0.8293 delay=0.8144 | MAPE: area=2.68% delay=5.00%
+  -> save best: ./ckpt/iwls26_or1200.pt (best_val_avg_R2_mean_tasks=0.821848)
+[Epoch 0022] train_loss(norm)=1.153717  val_avg_R2_mean_tasks=0.838694
+  TRAIN mse=205.673904 R2_avg_within_circuit=0.8600 R2_mean=0.8600 | area=0.8321 delay=0.8879 MAPE_avg_within_circuit=3.31% MAPE_mean=3.31% | area=2.51% delay=4.10%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.8600 MAPE_avg=3.31% | R2: area=0.8321 delay=0.8879 | MAPE: area=2.51% delay=4.10%
+  VAL   mse=235.197189 R2_avg_within_circuit=0.8387 R2_mean=0.8387 | area=0.8019 delay=0.8755 MAPE_avg_within_circuit=3.70% MAPE_mean=3.70% | area=2.87% delay=4.52%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8387 MAPE_avg=3.70% | R2: area=0.8019 delay=0.8755 | MAPE: area=2.87% delay=4.52%
+  -> save best: ./ckpt/iwls26_or1200.pt (best_val_avg_R2_mean_tasks=0.838694)
+[Epoch 0023] train_loss(norm)=1.094618  val_avg_R2_mean_tasks=0.800815
+  TRAIN mse=264.819000 R2_avg_within_circuit=0.8459 R2_mean=0.8459 | area=0.8834 delay=0.8085 MAPE_avg_within_circuit=3.41% MAPE_mean=3.41% | area=2.03% delay=4.79%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.8459 MAPE_avg=3.41% | R2: area=0.8834 delay=0.8085 | MAPE: area=2.03% delay=4.79%
+  VAL   mse=334.744293 R2_avg_within_circuit=0.8008 R2_mean=0.8008 | area=0.8297 delay=0.7720 MAPE_avg_within_circuit=4.04% MAPE_mean=4.04% | area=2.58% delay=5.50%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8008 MAPE_avg=4.04% | R2: area=0.8297 delay=0.7720 | MAPE: area=2.58% delay=5.50%
+[Epoch 0024] train_loss(norm)=1.082677  val_avg_R2_mean_tasks=0.807888
+  TRAIN mse=156.834427 R2_avg_within_circuit=0.9027 R2_mean=0.9027 | area=0.9085 delay=0.8970 MAPE_avg_within_circuit=2.65% MAPE_mean=2.65% | area=1.77% delay=3.54%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9027 MAPE_avg=2.65% | R2: area=0.9085 delay=0.8970 | MAPE: area=1.77% delay=3.54%
+  VAL   mse=321.393494 R2_avg_within_circuit=0.8079 R2_mean=0.8079 | area=0.8332 delay=0.7825 MAPE_avg_within_circuit=3.73% MAPE_mean=3.73% | area=2.50% delay=4.96%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8079 MAPE_avg=3.73% | R2: area=0.8332 delay=0.7825 | MAPE: area=2.50% delay=4.96%
+[Epoch 0025] train_loss(norm)=1.128483  val_avg_R2_mean_tasks=-1.244743
+  TRAIN mse=4229.652344 R2_avg_within_circuit=-1.0891 R2_mean=-1.0891 | area=0.5518 delay=-2.7299 MAPE_avg_within_circuit=10.60% MAPE_mean=10.60% | area=4.43% delay=16.78%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=-1.0891 MAPE_avg=10.60% | R2: area=0.5518 delay=-2.7299 | MAPE: area=4.43% delay=16.78%
+  VAL   mse=4640.920898 R2_avg_within_circuit=-1.2447 R2_mean=-1.2447 | area=0.5360 delay=-3.0255 MAPE_avg_within_circuit=12.32% MAPE_mean=12.32% | area=4.42% delay=20.23%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=-1.2447 MAPE_avg=12.32% | R2: area=0.5360 delay=-3.0255 | MAPE: area=4.42% delay=20.23%
+[Epoch 0026] train_loss(norm)=1.034712  val_avg_R2_mean_tasks=0.816897
+  TRAIN mse=183.897003 R2_avg_within_circuit=0.8874 R2_mean=0.8874 | area=0.8980 delay=0.8768 MAPE_avg_within_circuit=3.00% MAPE_mean=3.00% | area=1.89% delay=4.11%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.8874 MAPE_avg=3.00% | R2: area=0.8980 delay=0.8768 | MAPE: area=1.89% delay=4.11%
+  VAL   mse=280.892578 R2_avg_within_circuit=0.8169 R2_mean=0.8169 | area=0.7984 delay=0.8354 MAPE_avg_within_circuit=3.77% MAPE_mean=3.77% | area=2.74% delay=4.79%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8169 MAPE_avg=3.77% | R2: area=0.7984 delay=0.8354 | MAPE: area=2.74% delay=4.79%
+[Epoch 0027] train_loss(norm)=0.968744  val_avg_R2_mean_tasks=0.800127
+  TRAIN mse=120.974625 R2_avg_within_circuit=0.9253 R2_mean=0.9253 | area=0.9304 delay=0.9201 MAPE_avg_within_circuit=2.46% MAPE_mean=2.46% | area=1.59% delay=3.32%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9253 MAPE_avg=2.46% | R2: area=0.9304 delay=0.9201 | MAPE: area=1.59% delay=3.32%
+  VAL   mse=309.376770 R2_avg_within_circuit=0.8001 R2_mean=0.8001 | area=0.7846 delay=0.8156 MAPE_avg_within_circuit=4.13% MAPE_mean=4.13% | area=2.93% delay=5.33%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8001 MAPE_avg=4.13% | R2: area=0.7846 delay=0.8156 | MAPE: area=2.93% delay=5.33%
+[Epoch 0028] train_loss(norm)=0.944928  val_avg_R2_mean_tasks=0.840809
+  TRAIN mse=106.374847 R2_avg_within_circuit=0.9314 R2_mean=0.9314 | area=0.9277 delay=0.9352 MAPE_avg_within_circuit=2.37% MAPE_mean=2.37% | area=1.53% delay=3.20%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9314 MAPE_avg=2.37% | R2: area=0.9277 delay=0.9352 | MAPE: area=1.53% delay=3.20%
+  VAL   mse=242.809662 R2_avg_within_circuit=0.8408 R2_mean=0.8408 | area=0.8224 delay=0.8592 MAPE_avg_within_circuit=3.65% MAPE_mean=3.65% | area=2.74% delay=4.56%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8408 MAPE_avg=3.65% | R2: area=0.8224 delay=0.8592 | MAPE: area=2.74% delay=4.56%
+  -> save best: ./ckpt/iwls26_or1200.pt (best_val_avg_R2_mean_tasks=0.840809)
+[Epoch 0029] train_loss(norm)=0.905019  val_avg_R2_mean_tasks=0.800738
+  TRAIN mse=161.568878 R2_avg_within_circuit=0.9013 R2_mean=0.9013 | area=0.9105 delay=0.8921 MAPE_avg_within_circuit=2.57% MAPE_mean=2.57% | area=1.67% delay=3.47%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9013 MAPE_avg=2.57% | R2: area=0.9105 delay=0.8921 | MAPE: area=1.67% delay=3.47%
+  VAL   mse=322.388000 R2_avg_within_circuit=0.8007 R2_mean=0.8007 | area=0.8087 delay=0.7928 MAPE_avg_within_circuit=3.79% MAPE_mean=3.79% | area=2.70% delay=4.89%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8007 MAPE_avg=3.79% | R2: area=0.8087 delay=0.7928 | MAPE: area=2.70% delay=4.89%
+[Epoch 0030] train_loss(norm)=0.890971  val_avg_R2_mean_tasks=0.777403
+  TRAIN mse=135.386963 R2_avg_within_circuit=0.9151 R2_mean=0.9151 | area=0.9171 delay=0.9130 MAPE_avg_within_circuit=2.49% MAPE_mean=2.49% | area=1.69% delay=3.28%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9151 MAPE_avg=2.49% | R2: area=0.9171 delay=0.9130 | MAPE: area=1.69% delay=3.28%
+  VAL   mse=376.334991 R2_avg_within_circuit=0.7774 R2_mean=0.7774 | area=0.8134 delay=0.7414 MAPE_avg_within_circuit=4.12% MAPE_mean=4.12% | area=2.77% delay=5.47%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.7774 MAPE_avg=4.12% | R2: area=0.8134 delay=0.7414 | MAPE: area=2.77% delay=5.47%
+[Epoch 0031] train_loss(norm)=0.809007  val_avg_R2_mean_tasks=0.811624
+  TRAIN mse=200.065536 R2_avg_within_circuit=0.8784 R2_mean=0.8784 | area=0.8922 delay=0.8645 MAPE_avg_within_circuit=2.65% MAPE_mean=2.65% | area=1.81% delay=3.50%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.8784 MAPE_avg=2.65% | R2: area=0.8922 delay=0.8645 | MAPE: area=1.81% delay=3.50%
+  VAL   mse=293.204651 R2_avg_within_circuit=0.8116 R2_mean=0.8116 | area=0.7997 delay=0.8235 MAPE_avg_within_circuit=3.61% MAPE_mean=3.61% | area=2.71% delay=4.52%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8116 MAPE_avg=3.61% | R2: area=0.7997 delay=0.8235 | MAPE: area=2.71% delay=4.52%
+[Epoch 0032] train_loss(norm)=0.831586  val_avg_R2_mean_tasks=0.829366
+  TRAIN mse=105.477768 R2_avg_within_circuit=0.9333 R2_mean=0.9333 | area=0.9334 delay=0.9332 MAPE_avg_within_circuit=2.21% MAPE_mean=2.21% | area=1.58% delay=2.84%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9333 MAPE_avg=2.21% | R2: area=0.9334 delay=0.9332 | MAPE: area=1.58% delay=2.84%
+  VAL   mse=266.064423 R2_avg_within_circuit=0.8294 R2_mean=0.8294 | area=0.8194 delay=0.8394 MAPE_avg_within_circuit=3.58% MAPE_mean=3.58% | area=2.71% delay=4.45%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8294 MAPE_avg=3.58% | R2: area=0.8194 delay=0.8394 | MAPE: area=2.71% delay=4.45%
+[Epoch 0033] train_loss(norm)=0.801003  val_avg_R2_mean_tasks=0.794526
+  TRAIN mse=102.695503 R2_avg_within_circuit=0.9348 R2_mean=0.9348 | area=0.9339 delay=0.9356 MAPE_avg_within_circuit=2.23% MAPE_mean=2.23% | area=1.51% delay=2.95%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9348 MAPE_avg=2.23% | R2: area=0.9339 delay=0.9356 | MAPE: area=1.51% delay=2.95%
+  VAL   mse=343.588409 R2_avg_within_circuit=0.7945 R2_mean=0.7945 | area=0.8214 delay=0.7677 MAPE_avg_within_circuit=4.02% MAPE_mean=4.02% | area=2.75% delay=5.28%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.7945 MAPE_avg=4.02% | R2: area=0.8214 delay=0.7677 | MAPE: area=2.75% delay=5.28%
+[Epoch 0034] train_loss(norm)=0.814476  val_avg_R2_mean_tasks=0.823424
+  TRAIN mse=119.167671 R2_avg_within_circuit=0.9280 R2_mean=0.9280 | area=0.9374 delay=0.9186 MAPE_avg_within_circuit=2.26% MAPE_mean=2.26% | area=1.47% delay=3.04%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9280 MAPE_avg=2.26% | R2: area=0.9374 delay=0.9186 | MAPE: area=1.47% delay=3.04%
+  VAL   mse=285.418427 R2_avg_within_circuit=0.8234 R2_mean=0.8234 | area=0.8300 delay=0.8168 MAPE_avg_within_circuit=3.70% MAPE_mean=3.70% | area=2.56% delay=4.84%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8234 MAPE_avg=3.70% | R2: area=0.8300 delay=0.8168 | MAPE: area=2.56% delay=4.84%
+[Epoch 0035] train_loss(norm)=1.230997  val_avg_R2_mean_tasks=0.813164
+  TRAIN mse=152.178970 R2_avg_within_circuit=0.9022 R2_mean=0.9022 | area=0.8979 delay=0.9065 MAPE_avg_within_circuit=2.61% MAPE_mean=2.61% | area=1.96% delay=3.27%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9022 MAPE_avg=2.61% | R2: area=0.8979 delay=0.9065 | MAPE: area=1.96% delay=3.27%
+  VAL   mse=274.341431 R2_avg_within_circuit=0.8132 R2_mean=0.8132 | area=0.7738 delay=0.8526 MAPE_avg_within_circuit=3.78% MAPE_mean=3.78% | area=3.07% delay=4.49%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8132 MAPE_avg=3.78% | R2: area=0.7738 delay=0.8526 | MAPE: area=3.07% delay=4.49%
+[Epoch 0036] train_loss(norm)=0.805465  val_avg_R2_mean_tasks=0.841085
+  TRAIN mse=80.114525 R2_avg_within_circuit=0.9483 R2_mean=0.9483 | area=0.9456 delay=0.9510 MAPE_avg_within_circuit=1.97% MAPE_mean=1.97% | area=1.33% delay=2.61%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9483 MAPE_avg=1.97% | R2: area=0.9456 delay=0.9510 | MAPE: area=1.33% delay=2.61%
+  VAL   mse=238.575912 R2_avg_within_circuit=0.8411 R2_mean=0.8411 | area=0.8163 delay=0.8658 MAPE_avg_within_circuit=3.52% MAPE_mean=3.52% | area=2.81% delay=4.24%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8411 MAPE_avg=3.52% | R2: area=0.8163 delay=0.8658 | MAPE: area=2.81% delay=4.24%
+  -> save best: ./ckpt/iwls26_or1200.pt (best_val_avg_R2_mean_tasks=0.841085)
+[Epoch 0037] train_loss(norm)=0.669756  val_avg_R2_mean_tasks=0.818063
+  TRAIN mse=105.386223 R2_avg_within_circuit=0.9364 R2_mean=0.9364 | area=0.9443 delay=0.9285 MAPE_avg_within_circuit=2.22% MAPE_mean=2.22% | area=1.35% delay=3.09%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9364 MAPE_avg=2.22% | R2: area=0.9443 delay=0.9285 | MAPE: area=1.35% delay=3.09%
+  VAL   mse=288.521729 R2_avg_within_circuit=0.8181 R2_mean=0.8181 | area=0.8155 delay=0.8206 MAPE_avg_within_circuit=3.75% MAPE_mean=3.75% | area=2.74% delay=4.76%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8181 MAPE_avg=3.75% | R2: area=0.8155 delay=0.8206 | MAPE: area=2.74% delay=4.76%
+[Epoch 0038] train_loss(norm)=0.676294  val_avg_R2_mean_tasks=0.832219
+  TRAIN mse=110.932976 R2_avg_within_circuit=0.9226 R2_mean=0.9226 | area=0.9024 delay=0.9428 MAPE_avg_within_circuit=2.13% MAPE_mean=2.13% | area=1.60% delay=2.65%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9226 MAPE_avg=2.13% | R2: area=0.9024 delay=0.9428 | MAPE: area=1.60% delay=2.65%
+  VAL   mse=269.247314 R2_avg_within_circuit=0.8322 R2_mean=0.8322 | area=0.8352 delay=0.8292 MAPE_avg_within_circuit=3.79% MAPE_mean=3.79% | area=2.62% delay=4.95%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8322 MAPE_avg=3.79% | R2: area=0.8352 delay=0.8292 | MAPE: area=2.62% delay=4.95%
+[Epoch 0039] train_loss(norm)=0.646089  val_avg_R2_mean_tasks=0.810634
+  TRAIN mse=175.025757 R2_avg_within_circuit=0.9065 R2_mean=0.9065 | area=0.9547 delay=0.8583 MAPE_avg_within_circuit=2.23% MAPE_mean=2.23% | area=1.26% delay=3.21%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9065 MAPE_avg=2.23% | R2: area=0.9547 delay=0.8583 | MAPE: area=1.26% delay=3.21%
+  VAL   mse=307.500824 R2_avg_within_circuit=0.8106 R2_mean=0.8106 | area=0.8200 delay=0.8012 MAPE_avg_within_circuit=3.73% MAPE_mean=3.73% | area=2.64% delay=4.82%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8106 MAPE_avg=3.73% | R2: area=0.8200 delay=0.8012 | MAPE: area=2.64% delay=4.82%
+[Epoch 0040] train_loss(norm)=0.606299  val_avg_R2_mean_tasks=0.848121
+  TRAIN mse=92.051292 R2_avg_within_circuit=0.9399 R2_mean=0.9399 | area=0.9338 delay=0.9459 MAPE_avg_within_circuit=2.04% MAPE_mean=2.04% | area=1.37% delay=2.70%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9399 MAPE_avg=2.04% | R2: area=0.9338 delay=0.9459 | MAPE: area=1.37% delay=2.70%
+  VAL   mse=238.806305 R2_avg_within_circuit=0.8481 R2_mean=0.8481 | area=0.8426 delay=0.8537 MAPE_avg_within_circuit=3.48% MAPE_mean=3.48% | area=2.47% delay=4.49%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8481 MAPE_avg=3.48% | R2: area=0.8426 delay=0.8537 | MAPE: area=2.47% delay=4.49%
+  -> save best: ./ckpt/iwls26_or1200.pt (best_val_avg_R2_mean_tasks=0.848121)
+[Epoch 0041] train_loss(norm)=0.622257  val_avg_R2_mean_tasks=0.836481
+  TRAIN mse=80.980721 R2_avg_within_circuit=0.9474 R2_mean=0.9474 | area=0.9437 delay=0.9511 MAPE_avg_within_circuit=2.01% MAPE_mean=2.01% | area=1.42% delay=2.60%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9474 MAPE_avg=2.01% | R2: area=0.9437 delay=0.9511 | MAPE: area=1.42% delay=2.60%
+  VAL   mse=247.987411 R2_avg_within_circuit=0.8365 R2_mean=0.8365 | area=0.8152 delay=0.8578 MAPE_avg_within_circuit=3.51% MAPE_mean=3.51% | area=2.71% delay=4.31%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8365 MAPE_avg=3.51% | R2: area=0.8152 delay=0.8578 | MAPE: area=2.71% delay=4.31%
+[Epoch 0042] train_loss(norm)=0.692077  val_avg_R2_mean_tasks=0.846480
+  TRAIN mse=78.299370 R2_avg_within_circuit=0.9438 R2_mean=0.9438 | area=0.9249 delay=0.9628 MAPE_avg_within_circuit=1.85% MAPE_mean=1.85% | area=1.56% delay=2.14%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9438 MAPE_avg=1.85% | R2: area=0.9249 delay=0.9628 | MAPE: area=1.56% delay=2.14%
+  VAL   mse=229.326401 R2_avg_within_circuit=0.8465 R2_mean=0.8465 | area=0.8206 delay=0.8723 MAPE_avg_within_circuit=3.38% MAPE_mean=3.38% | area=2.62% delay=4.14%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8465 MAPE_avg=3.38% | R2: area=0.8206 delay=0.8723 | MAPE: area=2.62% delay=4.14%
+[Epoch 0043] train_loss(norm)=0.612790  val_avg_R2_mean_tasks=0.814974
+  TRAIN mse=83.973656 R2_avg_within_circuit=0.9444 R2_mean=0.9444 | area=0.9376 delay=0.9512 MAPE_avg_within_circuit=1.90% MAPE_mean=1.90% | area=1.47% delay=2.33%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9444 MAPE_avg=1.90% | R2: area=0.9376 delay=0.9512 | MAPE: area=1.47% delay=2.33%
+  VAL   mse=288.673767 R2_avg_within_circuit=0.8150 R2_mean=0.8150 | area=0.8044 delay=0.8255 MAPE_avg_within_circuit=3.81% MAPE_mean=3.81% | area=2.87% delay=4.76%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8150 MAPE_avg=3.81% | R2: area=0.8044 delay=0.8255 | MAPE: area=2.87% delay=4.76%
+[Epoch 0044] train_loss(norm)=0.445583  val_avg_R2_mean_tasks=0.792808
+  TRAIN mse=84.059898 R2_avg_within_circuit=0.9494 R2_mean=0.9494 | area=0.9564 delay=0.9424 MAPE_avg_within_circuit=1.84% MAPE_mean=1.84% | area=1.22% delay=2.47%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9494 MAPE_avg=1.84% | R2: area=0.9564 delay=0.9424 | MAPE: area=1.22% delay=2.47%
+  VAL   mse=343.277344 R2_avg_within_circuit=0.7928 R2_mean=0.7928 | area=0.8146 delay=0.7711 MAPE_avg_within_circuit=3.76% MAPE_mean=3.76% | area=2.66% delay=4.87%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.7928 MAPE_avg=3.76% | R2: area=0.8146 delay=0.7711 | MAPE: area=2.66% delay=4.87%
+[Epoch 0045] train_loss(norm)=0.486304  val_avg_R2_mean_tasks=0.811168
+  TRAIN mse=72.989365 R2_avg_within_circuit=0.9530 R2_mean=0.9530 | area=0.9507 delay=0.9553 MAPE_avg_within_circuit=1.84% MAPE_mean=1.84% | area=1.39% delay=2.29%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9530 MAPE_avg=1.84% | R2: area=0.9507 delay=0.9553 | MAPE: area=1.39% delay=2.29%
+  VAL   mse=304.132019 R2_avg_within_circuit=0.8112 R2_mean=0.8112 | area=0.8164 delay=0.8060 MAPE_avg_within_circuit=3.81% MAPE_mean=3.81% | area=2.76% delay=4.87%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8112 MAPE_avg=3.81% | R2: area=0.8164 delay=0.8060 | MAPE: area=2.76% delay=4.87%
+[Epoch 0046] train_loss(norm)=0.497554  val_avg_R2_mean_tasks=0.826812
+  TRAIN mse=82.037308 R2_avg_within_circuit=0.9512 R2_mean=0.9512 | area=0.9598 delay=0.9426 MAPE_avg_within_circuit=1.94% MAPE_mean=1.94% | area=1.24% delay=2.65%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9512 MAPE_avg=1.94% | R2: area=0.9598 delay=0.9426 | MAPE: area=1.24% delay=2.65%
+  VAL   mse=276.018188 R2_avg_within_circuit=0.8268 R2_mean=0.8268 | area=0.8267 delay=0.8269 MAPE_avg_within_circuit=3.60% MAPE_mean=3.60% | area=2.67% delay=4.53%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8268 MAPE_avg=3.60% | R2: area=0.8267 delay=0.8269 | MAPE: area=2.67% delay=4.53%
+[Epoch 0047] train_loss(norm)=0.422085  val_avg_R2_mean_tasks=0.816685
+  TRAIN mse=65.682182 R2_avg_within_circuit=0.9564 R2_mean=0.9564 | area=0.9507 delay=0.9621 MAPE_avg_within_circuit=1.76% MAPE_mean=1.76% | area=1.33% delay=2.19%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9564 MAPE_avg=1.76% | R2: area=0.9507 delay=0.9621 | MAPE: area=1.33% delay=2.19%
+  VAL   mse=289.690399 R2_avg_within_circuit=0.8167 R2_mean=0.8167 | area=0.8124 delay=0.8210 MAPE_avg_within_circuit=3.80% MAPE_mean=3.80% | area=2.81% delay=4.79%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8167 MAPE_avg=3.80% | R2: area=0.8124 delay=0.8210 | MAPE: area=2.81% delay=4.79%
+[Epoch 0048] train_loss(norm)=0.362315  val_avg_R2_mean_tasks=0.816234
+  TRAIN mse=65.849281 R2_avg_within_circuit=0.9578 R2_mean=0.9578 | area=0.9562 delay=0.9593 MAPE_avg_within_circuit=1.66% MAPE_mean=1.66% | area=1.19% delay=2.12%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9578 MAPE_avg=1.66% | R2: area=0.9562 delay=0.9593 | MAPE: area=1.19% delay=2.12%
+  VAL   mse=285.082336 R2_avg_within_circuit=0.8162 R2_mean=0.8162 | area=0.8030 delay=0.8294 MAPE_avg_within_circuit=3.63% MAPE_mean=3.63% | area=2.82% delay=4.45%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8162 MAPE_avg=3.63% | R2: area=0.8030 delay=0.8294 | MAPE: area=2.82% delay=4.45%
+[Epoch 0049] train_loss(norm)=0.466929  val_avg_R2_mean_tasks=0.844185
+  TRAIN mse=54.002781 R2_avg_within_circuit=0.9632 R2_mean=0.9632 | area=0.9558 delay=0.9706 MAPE_avg_within_circuit=1.59% MAPE_mean=1.59% | area=1.22% delay=1.96%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9632 MAPE_avg=1.59% | R2: area=0.9558 delay=0.9706 | MAPE: area=1.22% delay=1.96%
+  VAL   mse=230.081360 R2_avg_within_circuit=0.8442 R2_mean=0.8442 | area=0.8135 delay=0.8749 MAPE_avg_within_circuit=3.42% MAPE_mean=3.42% | area=2.80% delay=4.03%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8442 MAPE_avg=3.42% | R2: area=0.8135 delay=0.8749 | MAPE: area=2.80% delay=4.03%
+[Epoch 0050] train_loss(norm)=0.454252  val_avg_R2_mean_tasks=0.827303
+  TRAIN mse=71.168846 R2_avg_within_circuit=0.9476 R2_mean=0.9476 | area=0.9265 delay=0.9686 MAPE_avg_within_circuit=1.84% MAPE_mean=1.84% | area=1.67% delay=2.00%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9476 MAPE_avg=1.84% | R2: area=0.9265 delay=0.9686 | MAPE: area=1.67% delay=2.00%
+  VAL   mse=263.074921 R2_avg_within_circuit=0.8273 R2_mean=0.8273 | area=0.8068 delay=0.8478 MAPE_avg_within_circuit=3.55% MAPE_mean=3.55% | area=2.70% delay=4.41%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8273 MAPE_avg=3.55% | R2: area=0.8068 delay=0.8478 | MAPE: area=2.70% delay=4.41%
+[Epoch 0051] train_loss(norm)=0.394537  val_avg_R2_mean_tasks=0.836408
+  TRAIN mse=49.414768 R2_avg_within_circuit=0.9667 R2_mean=0.9667 | area=0.9609 delay=0.9725 MAPE_avg_within_circuit=1.40% MAPE_mean=1.40% | area=1.11% delay=1.70%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9667 MAPE_avg=1.40% | R2: area=0.9609 delay=0.9725 | MAPE: area=1.11% delay=1.70%
+  VAL   mse=252.874756 R2_avg_within_circuit=0.8364 R2_mean=0.8364 | area=0.8231 delay=0.8497 MAPE_avg_within_circuit=3.46% MAPE_mean=3.46% | area=2.71% delay=4.20%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8364 MAPE_avg=3.46% | R2: area=0.8231 delay=0.8497 | MAPE: area=2.71% delay=4.20%
+[Epoch 0052] train_loss(norm)=0.411081  val_avg_R2_mean_tasks=0.824052
+  TRAIN mse=62.850616 R2_avg_within_circuit=0.9597 R2_mean=0.9597 | area=0.9580 delay=0.9613 MAPE_avg_within_circuit=1.62% MAPE_mean=1.62% | area=1.24% delay=2.01%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9597 MAPE_avg=1.62% | R2: area=0.9580 delay=0.9613 | MAPE: area=1.24% delay=2.01%
+  VAL   mse=272.645813 R2_avg_within_circuit=0.8241 R2_mean=0.8241 | area=0.8109 delay=0.8372 MAPE_avg_within_circuit=3.86% MAPE_mean=3.86% | area=2.84% delay=4.88%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8241 MAPE_avg=3.86% | R2: area=0.8109 delay=0.8372 | MAPE: area=2.84% delay=4.88%
+[Epoch 0053] train_loss(norm)=0.424401  val_avg_R2_mean_tasks=0.834664
+  TRAIN mse=67.441315 R2_avg_within_circuit=0.9557 R2_mean=0.9557 | area=0.9506 delay=0.9608 MAPE_avg_within_circuit=1.58% MAPE_mean=1.58% | area=1.23% delay=1.92%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9557 MAPE_avg=1.58% | R2: area=0.9506 delay=0.9608 | MAPE: area=1.23% delay=1.92%
+  VAL   mse=257.521271 R2_avg_within_circuit=0.8347 R2_mean=0.8347 | area=0.8245 delay=0.8448 MAPE_avg_within_circuit=3.54% MAPE_mean=3.54% | area=2.66% delay=4.42%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8347 MAPE_avg=3.54% | R2: area=0.8245 delay=0.8448 | MAPE: area=2.66% delay=4.42%
+[Epoch 0054] train_loss(norm)=0.340341  val_avg_R2_mean_tasks=0.795049
+  TRAIN mse=54.646915 R2_avg_within_circuit=0.9611 R2_mean=0.9611 | area=0.9489 delay=0.9733 MAPE_avg_within_circuit=1.53% MAPE_mean=1.53% | area=1.35% delay=1.70%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9611 MAPE_avg=1.53% | R2: area=0.9489 delay=0.9733 | MAPE: area=1.35% delay=1.70%
+  VAL   mse=325.335968 R2_avg_within_circuit=0.7950 R2_mean=0.7950 | area=0.7927 delay=0.7974 MAPE_avg_within_circuit=3.73% MAPE_mean=3.73% | area=2.71% delay=4.75%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.7950 MAPE_avg=3.73% | R2: area=0.7927 delay=0.7974 | MAPE: area=2.71% delay=4.75%
+[Epoch 0055] train_loss(norm)=0.280706  val_avg_R2_mean_tasks=0.831264
+  TRAIN mse=43.262478 R2_avg_within_circuit=0.9695 R2_mean=0.9695 | area=0.9609 delay=0.9781 MAPE_avg_within_circuit=1.45% MAPE_mean=1.45% | area=1.23% delay=1.67%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9695 MAPE_avg=1.45% | R2: area=0.9609 delay=0.9781 | MAPE: area=1.23% delay=1.67%
+  VAL   mse=267.574524 R2_avg_within_circuit=0.8313 R2_mean=0.8313 | area=0.8289 delay=0.8336 MAPE_avg_within_circuit=3.49% MAPE_mean=3.49% | area=2.64% delay=4.34%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8313 MAPE_avg=3.49% | R2: area=0.8289 delay=0.8336 | MAPE: area=2.64% delay=4.34%
+[Epoch 0056] train_loss(norm)=0.451673  val_avg_R2_mean_tasks=0.796171
+  TRAIN mse=124.320892 R2_avg_within_circuit=0.8952 R2_mean=0.8952 | area=0.8225 delay=0.9679 MAPE_avg_within_circuit=1.69% MAPE_mean=1.69% | area=1.50% delay=1.87%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.8952 MAPE_avg=1.69% | R2: area=0.8225 delay=0.9679 | MAPE: area=1.50% delay=1.87%
+  VAL   mse=282.577667 R2_avg_within_circuit=0.7962 R2_mean=0.7962 | area=0.7252 delay=0.8672 MAPE_avg_within_circuit=3.59% MAPE_mean=3.59% | area=2.87% delay=4.30%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.7962 MAPE_avg=3.59% | R2: area=0.7252 delay=0.8672 | MAPE: area=2.87% delay=4.30%
+[Epoch 0057] train_loss(norm)=0.477815  val_avg_R2_mean_tasks=0.852493
+  TRAIN mse=55.847229 R2_avg_within_circuit=0.9621 R2_mean=0.9621 | area=0.9548 delay=0.9694 MAPE_avg_within_circuit=1.50% MAPE_mean=1.50% | area=1.13% delay=1.87%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9621 MAPE_avg=1.50% | R2: area=0.9548 delay=0.9694 | MAPE: area=1.13% delay=1.87%
+  VAL   mse=225.264023 R2_avg_within_circuit=0.8525 R2_mean=0.8525 | area=0.8359 delay=0.8691 MAPE_avg_within_circuit=3.49% MAPE_mean=3.49% | area=2.64% delay=4.34%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8525 MAPE_avg=3.49% | R2: area=0.8359 delay=0.8691 | MAPE: area=2.64% delay=4.34%
+  -> save best: ./ckpt/iwls26_or1200.pt (best_val_avg_R2_mean_tasks=0.852493)
+[Epoch 0058] train_loss(norm)=0.374604  val_avg_R2_mean_tasks=0.841730
+  TRAIN mse=86.389984 R2_avg_within_circuit=0.9500 R2_mean=0.9500 | area=0.9628 delay=0.9372 MAPE_avg_within_circuit=1.78% MAPE_mean=1.78% | area=1.16% delay=2.40%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9500 MAPE_avg=1.78% | R2: area=0.9628 delay=0.9372 | MAPE: area=1.16% delay=2.40%
+  VAL   mse=244.634094 R2_avg_within_circuit=0.8417 R2_mean=0.8417 | area=0.8289 delay=0.8546 MAPE_avg_within_circuit=3.57% MAPE_mean=3.57% | area=2.65% delay=4.50%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8417 MAPE_avg=3.57% | R2: area=0.8289 delay=0.8546 | MAPE: area=2.65% delay=4.50%
+[Epoch 0059] train_loss(norm)=0.362960  val_avg_R2_mean_tasks=0.859248
+  TRAIN mse=90.161888 R2_avg_within_circuit=0.9485 R2_mean=0.9485 | area=0.9637 delay=0.9332 MAPE_avg_within_circuit=1.77% MAPE_mean=1.77% | area=1.12% delay=2.41%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9485 MAPE_avg=1.77% | R2: area=0.9637 delay=0.9332 | MAPE: area=1.12% delay=2.41%
+  VAL   mse=215.267685 R2_avg_within_circuit=0.8592 R2_mean=0.8592 | area=0.8440 delay=0.8745 MAPE_avg_within_circuit=3.35% MAPE_mean=3.35% | area=2.46% delay=4.25%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8592 MAPE_avg=3.35% | R2: area=0.8440 delay=0.8745 | MAPE: area=2.46% delay=4.25%
+  -> save best: ./ckpt/iwls26_or1200.pt (best_val_avg_R2_mean_tasks=0.859248)
+[Epoch 0060] train_loss(norm)=0.456222  val_avg_R2_mean_tasks=0.835848
+  TRAIN mse=56.218899 R2_avg_within_circuit=0.9631 R2_mean=0.9631 | area=0.9594 delay=0.9668 MAPE_avg_within_circuit=1.48% MAPE_mean=1.48% | area=1.16% delay=1.80%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9631 MAPE_avg=1.48% | R2: area=0.9594 delay=0.9668 | MAPE: area=1.16% delay=1.80%
+  VAL   mse=254.638641 R2_avg_within_circuit=0.8358 R2_mean=0.8358 | area=0.8240 delay=0.8477 MAPE_avg_within_circuit=3.41% MAPE_mean=3.41% | area=2.60% delay=4.22%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8358 MAPE_avg=3.41% | R2: area=0.8240 delay=0.8477 | MAPE: area=2.60% delay=4.22%
+[Epoch 0061] train_loss(norm)=0.288505  val_avg_R2_mean_tasks=0.870577
+  TRAIN mse=52.482876 R2_avg_within_circuit=0.9659 R2_mean=0.9659 | area=0.9633 delay=0.9685 MAPE_avg_within_circuit=1.54% MAPE_mean=1.54% | area=1.12% delay=1.97%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9659 MAPE_avg=1.54% | R2: area=0.9633 delay=0.9685 | MAPE: area=1.12% delay=1.97%
+  VAL   mse=191.720886 R2_avg_within_circuit=0.8706 R2_mean=0.8706 | area=0.8461 delay=0.8951 MAPE_avg_within_circuit=3.14% MAPE_mean=3.14% | area=2.47% delay=3.82%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8706 MAPE_avg=3.14% | R2: area=0.8461 delay=0.8951 | MAPE: area=2.47% delay=3.82%
+  -> save best: ./ckpt/iwls26_or1200.pt (best_val_avg_R2_mean_tasks=0.870577)
+[Epoch 0062] train_loss(norm)=0.265673  val_avg_R2_mean_tasks=0.821793
+  TRAIN mse=43.559044 R2_avg_within_circuit=0.9707 R2_mean=0.9707 | area=0.9657 delay=0.9756 MAPE_avg_within_circuit=1.46% MAPE_mean=1.46% | area=1.11% delay=1.82%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9707 MAPE_avg=1.46% | R2: area=0.9657 delay=0.9756 | MAPE: area=1.11% delay=1.82%
+  VAL   mse=267.748627 R2_avg_within_circuit=0.8218 R2_mean=0.8218 | area=0.7944 delay=0.8492 MAPE_avg_within_circuit=3.44% MAPE_mean=3.44% | area=2.89% delay=3.98%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8218 MAPE_avg=3.44% | R2: area=0.7944 delay=0.8492 | MAPE: area=2.89% delay=3.98%
+[Epoch 0063] train_loss(norm)=0.226859  val_avg_R2_mean_tasks=0.870701
+  TRAIN mse=56.186211 R2_avg_within_circuit=0.9649 R2_mean=0.9649 | area=0.9664 delay=0.9635 MAPE_avg_within_circuit=1.46% MAPE_mean=1.46% | area=1.02% delay=1.90%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9649 MAPE_avg=1.46% | R2: area=0.9664 delay=0.9635 | MAPE: area=1.02% delay=1.90%
+  VAL   mse=192.889496 R2_avg_within_circuit=0.8707 R2_mean=0.8707 | area=0.8485 delay=0.8929 MAPE_avg_within_circuit=3.34% MAPE_mean=3.34% | area=2.59% delay=4.09%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8707 MAPE_avg=3.34% | R2: area=0.8485 delay=0.8929 | MAPE: area=2.59% delay=4.09%
+  -> save best: ./ckpt/iwls26_or1200.pt (best_val_avg_R2_mean_tasks=0.870701)
+[Epoch 0064] train_loss(norm)=0.423178  val_avg_R2_mean_tasks=0.854354
+  TRAIN mse=44.608086 R2_avg_within_circuit=0.9702 R2_mean=0.9702 | area=0.9658 delay=0.9746 MAPE_avg_within_circuit=1.41% MAPE_mean=1.41% | area=1.12% delay=1.71%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9702 MAPE_avg=1.41% | R2: area=0.9658 delay=0.9746 | MAPE: area=1.12% delay=1.71%
+  VAL   mse=214.712891 R2_avg_within_circuit=0.8544 R2_mean=0.8544 | area=0.8251 delay=0.8836 MAPE_avg_within_circuit=3.27% MAPE_mean=3.27% | area=2.58% delay=3.96%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8544 MAPE_avg=3.27% | R2: area=0.8251 delay=0.8836 | MAPE: area=2.58% delay=3.96%
+[Epoch 0065] train_loss(norm)=0.344620  val_avg_R2_mean_tasks=0.849908
+  TRAIN mse=53.216164 R2_avg_within_circuit=0.9589 R2_mean=0.9589 | area=0.9380 delay=0.9797 MAPE_avg_within_circuit=1.54% MAPE_mean=1.54% | area=1.53% delay=1.54%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9589 MAPE_avg=1.54% | R2: area=0.9380 delay=0.9797 | MAPE: area=1.53% delay=1.54%
+  VAL   mse=214.782150 R2_avg_within_circuit=0.8499 R2_mean=0.8499 | area=0.8089 delay=0.8910 MAPE_avg_within_circuit=3.44% MAPE_mean=3.44% | area=2.84% delay=4.04%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8499 MAPE_avg=3.44% | R2: area=0.8089 delay=0.8910 | MAPE: area=2.84% delay=4.04%
+[Epoch 0066] train_loss(norm)=0.289837  val_avg_R2_mean_tasks=0.784513
+  TRAIN mse=66.727501 R2_avg_within_circuit=0.9568 R2_mean=0.9568 | area=0.9540 delay=0.9597 MAPE_avg_within_circuit=1.52% MAPE_mean=1.52% | area=1.17% delay=1.88%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9568 MAPE_avg=1.52% | R2: area=0.9540 delay=0.9597 | MAPE: area=1.17% delay=1.88%
+  VAL   mse=351.080139 R2_avg_within_circuit=0.7845 R2_mean=0.7845 | area=0.7972 delay=0.7719 MAPE_avg_within_circuit=3.79% MAPE_mean=3.79% | area=2.81% delay=4.78%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.7845 MAPE_avg=3.79% | R2: area=0.7972 delay=0.7719 | MAPE: area=2.81% delay=4.78%
+[Epoch 0067] train_loss(norm)=0.270513  val_avg_R2_mean_tasks=0.827481
+  TRAIN mse=54.044662 R2_avg_within_circuit=0.9641 R2_mean=0.9641 | area=0.9594 delay=0.9688 MAPE_avg_within_circuit=1.56% MAPE_mean=1.56% | area=1.24% delay=1.88%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9641 MAPE_avg=1.56% | R2: area=0.9594 delay=0.9688 | MAPE: area=1.24% delay=1.88%
+  VAL   mse=261.672485 R2_avg_within_circuit=0.8275 R2_mean=0.8275 | area=0.8051 delay=0.8499 MAPE_avg_within_circuit=3.68% MAPE_mean=3.68% | area=2.83% delay=4.54%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8275 MAPE_avg=3.68% | R2: area=0.8051 delay=0.8499 | MAPE: area=2.83% delay=4.54%
+[Epoch 0068] train_loss(norm)=0.326991  val_avg_R2_mean_tasks=0.846781
+  TRAIN mse=46.665699 R2_avg_within_circuit=0.9656 R2_mean=0.9656 | area=0.9517 delay=0.9794 MAPE_avg_within_circuit=1.45% MAPE_mean=1.45% | area=1.29% delay=1.61%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9656 MAPE_avg=1.45% | R2: area=0.9517 delay=0.9794 | MAPE: area=1.29% delay=1.61%
+  VAL   mse=222.816223 R2_avg_within_circuit=0.8468 R2_mean=0.8468 | area=0.8108 delay=0.8827 MAPE_avg_within_circuit=3.37% MAPE_mean=3.37% | area=2.71% delay=4.03%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8468 MAPE_avg=3.37% | R2: area=0.8108 delay=0.8827 | MAPE: area=2.71% delay=4.03%
+[Epoch 0069] train_loss(norm)=0.241164  val_avg_R2_mean_tasks=0.872464
+  TRAIN mse=51.696838 R2_avg_within_circuit=0.9666 R2_mean=0.9666 | area=0.9648 delay=0.9684 MAPE_avg_within_circuit=1.41% MAPE_mean=1.41% | area=1.14% delay=1.68%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9666 MAPE_avg=1.41% | R2: area=0.9648 delay=0.9684 | MAPE: area=1.14% delay=1.68%
+  VAL   mse=178.185471 R2_avg_within_circuit=0.8725 R2_mean=0.8725 | area=0.8303 delay=0.9146 MAPE_avg_within_circuit=3.15% MAPE_mean=3.15% | area=2.60% delay=3.70%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8725 MAPE_avg=3.15% | R2: area=0.8303 delay=0.9146 | MAPE: area=2.60% delay=3.70%
+  -> save best: ./ckpt/iwls26_or1200.pt (best_val_avg_R2_mean_tasks=0.872464)
+[Epoch 0070] train_loss(norm)=0.231981  val_avg_R2_mean_tasks=0.866677
+  TRAIN mse=39.437355 R2_avg_within_circuit=0.9733 R2_mean=0.9733 | area=0.9683 delay=0.9783 MAPE_avg_within_circuit=1.30% MAPE_mean=1.30% | area=1.07% delay=1.53%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9733 MAPE_avg=1.30% | R2: area=0.9683 delay=0.9783 | MAPE: area=1.07% delay=1.53%
+  VAL   mse=202.494614 R2_avg_within_circuit=0.8667 R2_mean=0.8667 | area=0.8498 delay=0.8835 MAPE_avg_within_circuit=3.19% MAPE_mean=3.19% | area=2.45% delay=3.94%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8667 MAPE_avg=3.19% | R2: area=0.8498 delay=0.8835 | MAPE: area=2.45% delay=3.94%
+[Epoch 0071] train_loss(norm)=0.234134  val_avg_R2_mean_tasks=0.829994
+  TRAIN mse=40.981701 R2_avg_within_circuit=0.9720 R2_mean=0.9720 | area=0.9659 delay=0.9781 MAPE_avg_within_circuit=1.42% MAPE_mean=1.42% | area=1.10% delay=1.73%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9720 MAPE_avg=1.42% | R2: area=0.9659 delay=0.9781 | MAPE: area=1.10% delay=1.73%
+  VAL   mse=262.229614 R2_avg_within_circuit=0.8300 R2_mean=0.8300 | area=0.8153 delay=0.8447 MAPE_avg_within_circuit=3.47% MAPE_mean=3.47% | area=2.73% delay=4.21%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8300 MAPE_avg=3.47% | R2: area=0.8153 delay=0.8447 | MAPE: area=2.73% delay=4.21%
+[Epoch 0072] train_loss(norm)=0.144949  val_avg_R2_mean_tasks=0.844540
+  TRAIN mse=48.679787 R2_avg_within_circuit=0.9695 R2_mean=0.9695 | area=0.9705 delay=0.9686 MAPE_avg_within_circuit=1.43% MAPE_mean=1.43% | area=0.99% delay=1.87%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9695 MAPE_avg=1.43% | R2: area=0.9705 delay=0.9686 | MAPE: area=0.99% delay=1.87%
+  VAL   mse=238.908234 R2_avg_within_circuit=0.8445 R2_mean=0.8445 | area=0.8296 delay=0.8595 MAPE_avg_within_circuit=3.47% MAPE_mean=3.47% | area=2.58% delay=4.35%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8445 MAPE_avg=3.47% | R2: area=0.8296 delay=0.8595 | MAPE: area=2.58% delay=4.35%
+[Epoch 0073] train_loss(norm)=0.671615  val_avg_R2_mean_tasks=0.814852
+  TRAIN mse=65.279350 R2_avg_within_circuit=0.9463 R2_mean=0.9463 | area=0.9117 delay=0.9809 MAPE_avg_within_circuit=1.62% MAPE_mean=1.62% | area=1.75% delay=1.48%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9463 MAPE_avg=1.62% | R2: area=0.9117 delay=0.9809 | MAPE: area=1.75% delay=1.48%
+  VAL   mse=268.451233 R2_avg_within_circuit=0.8149 R2_mean=0.8149 | area=0.7701 delay=0.8596 MAPE_avg_within_circuit=3.61% MAPE_mean=3.61% | area=3.10% delay=4.12%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8149 MAPE_avg=3.61% | R2: area=0.7701 delay=0.8596 | MAPE: area=3.10% delay=4.12%
+[Epoch 0074] train_loss(norm)=0.687543  val_avg_R2_mean_tasks=0.819342
+  TRAIN mse=92.488991 R2_avg_within_circuit=0.9470 R2_mean=0.9470 | area=0.9625 delay=0.9316 MAPE_avg_within_circuit=1.56% MAPE_mean=1.56% | area=1.09% delay=2.03%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9470 MAPE_avg=1.56% | R2: area=0.9625 delay=0.9316 | MAPE: area=1.09% delay=2.03%
+  VAL   mse=289.890747 R2_avg_within_circuit=0.8193 R2_mean=0.8193 | area=0.8225 delay=0.8162 MAPE_avg_within_circuit=3.64% MAPE_mean=3.64% | area=2.70% delay=4.58%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8193 MAPE_avg=3.64% | R2: area=0.8225 delay=0.8162 | MAPE: area=2.70% delay=4.58%
+[Epoch 0075] train_loss(norm)=0.370579  val_avg_R2_mean_tasks=0.792446
+  TRAIN mse=68.900459 R2_avg_within_circuit=0.9567 R2_mean=0.9567 | area=0.9574 delay=0.9560 MAPE_avg_within_circuit=1.51% MAPE_mean=1.51% | area=1.15% delay=1.88%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9567 MAPE_avg=1.51% | R2: area=0.9574 delay=0.9560 | MAPE: area=1.15% delay=1.88%
+  VAL   mse=337.219635 R2_avg_within_circuit=0.7924 R2_mean=0.7924 | area=0.8031 delay=0.7818 MAPE_avg_within_circuit=3.77% MAPE_mean=3.77% | area=2.73% delay=4.82%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.7924 MAPE_avg=3.77% | R2: area=0.8031 delay=0.7818 | MAPE: area=2.73% delay=4.82%
+[Epoch 0076] train_loss(norm)=0.327745  val_avg_R2_mean_tasks=0.806887
+  TRAIN mse=44.581760 R2_avg_within_circuit=0.9680 R2_mean=0.9680 | area=0.9574 delay=0.9786 MAPE_avg_within_circuit=1.43% MAPE_mean=1.43% | area=1.17% delay=1.69%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9680 MAPE_avg=1.43% | R2: area=0.9574 delay=0.9786 | MAPE: area=1.17% delay=1.69%
+  VAL   mse=301.976196 R2_avg_within_circuit=0.8069 R2_mean=0.8069 | area=0.7970 delay=0.8167 MAPE_avg_within_circuit=3.58% MAPE_mean=3.58% | area=2.78% delay=4.37%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8069 MAPE_avg=3.58% | R2: area=0.7970 delay=0.8167 | MAPE: area=2.78% delay=4.37%
+[Epoch 0077] train_loss(norm)=0.209862  val_avg_R2_mean_tasks=0.818037
+  TRAIN mse=90.142433 R2_avg_within_circuit=0.9488 R2_mean=0.9488 | area=0.9652 delay=0.9325 MAPE_avg_within_circuit=1.56% MAPE_mean=1.56% | area=1.11% delay=2.00%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9488 MAPE_avg=1.56% | R2: area=0.9652 delay=0.9325 | MAPE: area=1.11% delay=2.00%
+  VAL   mse=287.478333 R2_avg_within_circuit=0.8180 R2_mean=0.8180 | area=0.8137 delay=0.8224 MAPE_avg_within_circuit=3.59% MAPE_mean=3.59% | area=2.70% delay=4.49%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8180 MAPE_avg=3.59% | R2: area=0.8137 delay=0.8224 | MAPE: area=2.70% delay=4.49%
+[Epoch 0078] train_loss(norm)=0.295146  val_avg_R2_mean_tasks=0.863747
+  TRAIN mse=40.571693 R2_avg_within_circuit=0.9703 R2_mean=0.9703 | area=0.9592 delay=0.9815 MAPE_avg_within_circuit=1.38% MAPE_mean=1.38% | area=1.18% delay=1.59%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9703 MAPE_avg=1.38% | R2: area=0.9592 delay=0.9815 | MAPE: area=1.18% delay=1.59%
+  VAL   mse=205.937149 R2_avg_within_circuit=0.8637 R2_mean=0.8637 | area=0.8448 delay=0.8826 MAPE_avg_within_circuit=3.25% MAPE_mean=3.25% | area=2.51% delay=3.98%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8637 MAPE_avg=3.25% | R2: area=0.8448 delay=0.8826 | MAPE: area=2.51% delay=3.98%
+[Epoch 0079] train_loss(norm)=0.280236  val_avg_R2_mean_tasks=0.842897
+  TRAIN mse=50.441227 R2_avg_within_circuit=0.9676 R2_mean=0.9676 | area=0.9662 delay=0.9689 MAPE_avg_within_circuit=1.34% MAPE_mean=1.34% | area=1.06% delay=1.61%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9676 MAPE_avg=1.34% | R2: area=0.9662 delay=0.9689 | MAPE: area=1.06% delay=1.61%
+  VAL   mse=242.207214 R2_avg_within_circuit=0.8429 R2_mean=0.8429 | area=0.8291 delay=0.8567 MAPE_avg_within_circuit=3.43% MAPE_mean=3.43% | area=2.62% delay=4.24%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8429 MAPE_avg=3.43% | R2: area=0.8291 delay=0.8567 | MAPE: area=2.62% delay=4.24%
+[Epoch 0080] train_loss(norm)=0.235192  val_avg_R2_mean_tasks=0.869472
+  TRAIN mse=32.313873 R2_avg_within_circuit=0.9772 R2_mean=0.9772 | area=0.9706 delay=0.9838 MAPE_avg_within_circuit=1.21% MAPE_mean=1.21% | area=1.04% delay=1.39%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9772 MAPE_avg=1.21% | R2: area=0.9706 delay=0.9838 | MAPE: area=1.04% delay=1.39%
+  VAL   mse=202.350449 R2_avg_within_circuit=0.8695 R2_mean=0.8695 | area=0.8599 delay=0.8791 MAPE_avg_within_circuit=3.23% MAPE_mean=3.23% | area=2.40% delay=4.06%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8695 MAPE_avg=3.23% | R2: area=0.8599 delay=0.8791 | MAPE: area=2.40% delay=4.06%
+[Epoch 0081] train_loss(norm)=0.145964  val_avg_R2_mean_tasks=0.832935
+  TRAIN mse=34.317146 R2_avg_within_circuit=0.9760 R2_mean=0.9760 | area=0.9694 delay=0.9825 MAPE_avg_within_circuit=1.27% MAPE_mean=1.27% | area=1.07% delay=1.47%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9760 MAPE_avg=1.27% | R2: area=0.9694 delay=0.9825 | MAPE: area=1.07% delay=1.47%
+  VAL   mse=272.052246 R2_avg_within_circuit=0.8329 R2_mean=0.8329 | area=0.8425 delay=0.8233 MAPE_avg_within_circuit=3.44% MAPE_mean=3.44% | area=2.49% delay=4.38%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8329 MAPE_avg=3.44% | R2: area=0.8425 delay=0.8233 | MAPE: area=2.49% delay=4.38%
+[Epoch 0082] train_loss(norm)=0.151039  val_avg_R2_mean_tasks=0.834791
+  TRAIN mse=38.282574 R2_avg_within_circuit=0.9732 R2_mean=0.9732 | area=0.9658 delay=0.9805 MAPE_avg_within_circuit=1.32% MAPE_mean=1.32% | area=1.08% delay=1.56%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9732 MAPE_avg=1.32% | R2: area=0.9658 delay=0.9805 | MAPE: area=1.08% delay=1.56%
+  VAL   mse=253.522720 R2_avg_within_circuit=0.8348 R2_mean=0.8348 | area=0.8183 delay=0.8513 MAPE_avg_within_circuit=3.44% MAPE_mean=3.44% | area=2.67% delay=4.20%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8348 MAPE_avg=3.44% | R2: area=0.8183 delay=0.8513 | MAPE: area=2.67% delay=4.20%
+[Epoch 0083] train_loss(norm)=0.193519  val_avg_R2_mean_tasks=0.809083
+  TRAIN mse=74.727242 R2_avg_within_circuit=0.9583 R2_mean=0.9583 | area=0.9736 delay=0.9430 MAPE_avg_within_circuit=1.43% MAPE_mean=1.43% | area=0.94% delay=1.92%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9583 MAPE_avg=1.43% | R2: area=0.9736 delay=0.9430 | MAPE: area=0.94% delay=1.92%
+  VAL   mse=334.851196 R2_avg_within_circuit=0.8091 R2_mean=0.8091 | area=0.8602 delay=0.7580 MAPE_avg_within_circuit=3.74% MAPE_mean=3.74% | area=2.40% delay=5.08%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8091 MAPE_avg=3.74% | R2: area=0.8602 delay=0.7580 | MAPE: area=2.40% delay=5.08%
+[Epoch 0084] train_loss(norm)=0.338214  val_avg_R2_mean_tasks=0.838344
+  TRAIN mse=66.885971 R2_avg_within_circuit=0.9601 R2_mean=0.9601 | area=0.9668 delay=0.9533 MAPE_avg_within_circuit=1.48% MAPE_mean=1.48% | area=1.08% delay=1.88%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9601 MAPE_avg=1.48% | R2: area=0.9668 delay=0.9533 | MAPE: area=1.08% delay=1.88%
+  VAL   mse=253.161682 R2_avg_within_circuit=0.8383 R2_mean=0.8383 | area=0.8307 delay=0.8460 MAPE_avg_within_circuit=3.39% MAPE_mean=3.39% | area=2.56% delay=4.23%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8383 MAPE_avg=3.39% | R2: area=0.8307 delay=0.8460 | MAPE: area=2.56% delay=4.23%
+[Epoch 0085] train_loss(norm)=0.420509  val_avg_R2_mean_tasks=0.869922
+  TRAIN mse=50.054813 R2_avg_within_circuit=0.9682 R2_mean=0.9682 | area=0.9678 delay=0.9686 MAPE_avg_within_circuit=1.48% MAPE_mean=1.48% | area=1.03% delay=1.92%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9682 MAPE_avg=1.48% | R2: area=0.9678 delay=0.9686 | MAPE: area=1.03% delay=1.92%
+  VAL   mse=200.331238 R2_avg_within_circuit=0.8699 R2_mean=0.8699 | area=0.8581 delay=0.8817 MAPE_avg_within_circuit=3.19% MAPE_mean=3.19% | area=2.38% delay=4.01%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8699 MAPE_avg=3.19% | R2: area=0.8581 delay=0.8817 | MAPE: area=2.38% delay=4.01%
+[Epoch 0086] train_loss(norm)=0.314178  val_avg_R2_mean_tasks=0.839321
+  TRAIN mse=48.295856 R2_avg_within_circuit=0.9671 R2_mean=0.9671 | area=0.9601 delay=0.9740 MAPE_avg_within_circuit=1.52% MAPE_mean=1.52% | area=1.21% delay=1.83%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9671 MAPE_avg=1.52% | R2: area=0.9601 delay=0.9740 | MAPE: area=1.21% delay=1.83%
+  VAL   mse=247.839600 R2_avg_within_circuit=0.8393 R2_mean=0.8393 | area=0.8254 delay=0.8533 MAPE_avg_within_circuit=3.55% MAPE_mean=3.55% | area=2.60% delay=4.50%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8393 MAPE_avg=3.55% | R2: area=0.8254 delay=0.8533 | MAPE: area=2.60% delay=4.50%
+[Epoch 0087] train_loss(norm)=0.218143  val_avg_R2_mean_tasks=0.804211
+  TRAIN mse=35.582737 R2_avg_within_circuit=0.9742 R2_mean=0.9742 | area=0.9649 delay=0.9835 MAPE_avg_within_circuit=1.23% MAPE_mean=1.23% | area=1.07% delay=1.39%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9742 MAPE_avg=1.23% | R2: area=0.9649 delay=0.9835 | MAPE: area=1.07% delay=1.39%
+  VAL   mse=324.504791 R2_avg_within_circuit=0.8042 R2_mean=0.8042 | area=0.8250 delay=0.7835 MAPE_avg_within_circuit=3.57% MAPE_mean=3.57% | area=2.63% delay=4.52%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8042 MAPE_avg=3.57% | R2: area=0.8250 delay=0.7835 | MAPE: area=2.63% delay=4.52%
+[Epoch 0088] train_loss(norm)=0.267180  val_avg_R2_mean_tasks=0.863897
+  TRAIN mse=49.483616 R2_avg_within_circuit=0.9682 R2_mean=0.9682 | area=0.9669 delay=0.9695 MAPE_avg_within_circuit=1.31% MAPE_mean=1.31% | area=1.03% delay=1.60%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9682 MAPE_avg=1.31% | R2: area=0.9669 delay=0.9695 | MAPE: area=1.03% delay=1.60%
+  VAL   mse=204.087708 R2_avg_within_circuit=0.8639 R2_mean=0.8639 | area=0.8423 delay=0.8855 MAPE_avg_within_circuit=3.21% MAPE_mean=3.21% | area=2.53% delay=3.89%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8639 MAPE_avg=3.21% | R2: area=0.8423 delay=0.8855 | MAPE: area=2.53% delay=3.89%
+[Epoch 0089] train_loss(norm)=0.355941  val_avg_R2_mean_tasks=0.857057
+  TRAIN mse=54.140991 R2_avg_within_circuit=0.9643 R2_mean=0.9643 | area=0.9602 delay=0.9685 MAPE_avg_within_circuit=1.45% MAPE_mean=1.45% | area=1.21% delay=1.68%
+    [TRAIN] gid=  0 circuit=or1200.aag R2_avg=0.9643 MAPE_avg=1.45% | R2: area=0.9602 delay=0.9685 | MAPE: area=1.21% delay=1.68%
+  VAL   mse=204.123611 R2_avg_within_circuit=0.8571 R2_mean=0.8571 | area=0.8172 delay=0.8969 MAPE_avg_within_circuit=3.24% MAPE_mean=3.24% | area=2.68% delay=3.79%
+    [VAL] gid=  0 circuit=or1200.aag R2_avg=0.8571 MAPE_avg=3.24% | R2: area=0.8172 delay=0.8969 | MAPE: area=2.68% delay=3.79%
+
+[EARLY STOP] No val avg R2 (mean tasks) improvement for 20 epochs.
+Best epoch=69, best_val_avg_R2_mean_tasks=0.872464
+
+======================================================================
+[FINAL] Loading best checkpoint and evaluating on TEST ...
+[BEST] epoch=69  best_val_avg_R2_mean_tasks=0.872464
+[TEST] mse=275.523132  R2_avg_within_circuit=0.8341  R2_mean=0.8341  MAPE_avg_within_circuit=3.75%  MAPE_mean=3.75%
+  area: R2=0.8176  MAPE=2.68%  MAE=10.743450
+  delay: R2=0.8506  MAPE=4.81%  MAE=13.535621
+  [TEST] Per-circuit R2 & MAPE (circuit-internal):
+    [TEST] gid=  0 circuit=or1200.aag R2_avg=0.8341 MAPE_avg=3.75% | R2: area=0.8176 delay=0.8506 | MAPE: area=2.68% delay=4.81%
+
+[PRUNING] 剪枝决策质量（越小越好：真值最优样本被划入「预测最大」一侧的比例）
+  含义：「预测最大 p%」= 按预测值排序后取较大的 ceil(p%·N) 个样本；「真值最小 q%」= 真值最小的 ceil(q%·N) 个样本（area/delay 越小越优）。
+  误伤率 = |二者交集| / |真值最小 q%| —— 表示最优设计被误判为「大」而被切掉的比例。
+
+  --- area (N=330) ---
+    真值最小 10%：扫描 1–99% 预测最大侧，误伤率最低时 最佳预测最大占比 ≈ 1.0% (误伤率=0.00%)
+      预测最大 50% 时：误伤真值最小 10% 的比例 = 0.00% (交集 0/33)
+      预测最大 70% 时：误伤真值最小 10% 的比例 = 6.06% (交集 2/33)
+      预测最大 80% 时：误伤真值最小 10% 的比例 = 18.18% (交集 6/33)
+    真值最小 5%：扫描 1–99% 预测最大侧，误伤率最低时 最佳预测最大占比 ≈ 1.0% (误伤率=0.00%)
+      预测最大 50% 时：误伤真值最小 5% 的比例 = 0.00% (交集 0/17)
+      预测最大 70% 时：误伤真值最小 5% 的比例 = 5.88% (交集 1/17)
+      预测最大 80% 时：误伤真值最小 5% 的比例 = 11.76% (交集 2/17)
+
+  --- delay (N=330) ---
+    真值最小 10%：扫描 1–99% 预测最大侧，误伤率最低时 最佳预测最大占比 ≈ 1.0% (误伤率=0.00%)
+      预测最大 50% 时：误伤真值最小 10% 的比例 = 15.15% (交集 5/33)
+      预测最大 70% 时：误伤真值最小 10% 的比例 = 45.45% (交集 15/33)
+      预测最大 80% 时：误伤真值最小 10% 的比例 = 54.55% (交集 18/33)
+    真值最小 5%：扫描 1–99% 预测最大侧，误伤率最低时 最佳预测最大占比 ≈ 1.0% (误伤率=0.00%)
+      预测最大 50% 时：误伤真值最小 5% 的比例 = 5.88% (交集 1/17)
+      预测最大 70% 时：误伤真值最小 5% 的比例 = 17.65% (交集 3/17)
+      预测最大 80% 时：误伤真值最小 5% 的比例 = 29.41% (交集 5/17)
+======================================================================
+[OK] or1200
+
