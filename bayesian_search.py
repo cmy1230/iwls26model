@@ -1257,6 +1257,7 @@ class SynthesisEvaluator:
         self.best_cost = float("inf")
         self.best_seq = []
         self.best_stats = {}
+        self._last_stats: dict = {}
         self.eval_count = 0
 
         # 模块E: 多保真度评估（默认关闭，--multifidelity 开启）
@@ -1305,6 +1306,7 @@ class SynthesisEvaluator:
             # 全NOP序列：仍需追加特征以保持索引同步
             self._circuit_features.append(
                 np.array([1.0, 1.0, 1.0], dtype=np.float64))
+            self._last_stats = {}
             return 10.0
 
         # ---- 模块E: 多保真度路径选择 ----
@@ -1330,6 +1332,8 @@ class SynthesisEvaluator:
         else:
             stats = self.abc.run_fast_stats(self.input_file, action_strs)
             self._fast_eval_count += 1
+
+        self._last_stats = dict(stats)
 
         # ---- 模块C: 记录电路特征（无论评估是否成功，必须追加）----
         init = self.init_stats
@@ -1407,7 +1411,8 @@ class BOiLSOptimizer:
                  batch_k=2, elite_size=15,
                  enable_cc_ssk=True, circuit_weight=0.3,
                  enable_seeded_init=True,
-                 surrogate=None):
+                 surrogate=None,
+                 surrogate_expand=10):
         self.evaluator = evaluator
         self.n_actions = n_actions
         self.n_init = max(n_init, 5)
@@ -1486,6 +1491,7 @@ class BOiLSOptimizer:
 
         # ---- 模块G: 模型代理加速 ----
         self.surrogate = surrogate
+        self.surrogate_expand = max(1, surrogate_expand)
 
         self._pseudo_seqs: list = []
         self._pseudo_nc_raw: list = []
@@ -1769,15 +1775,10 @@ class BOiLSOptimizer:
                     and bo_step > 0
                     and bo_step % self.hp_interval == 0):
                 self.gp.optimize_hp(n_restarts=2, max_iter=5)
-                if self._use_rbf:
-                    print(f"  [HP] length_scale={self.kernel.length_scale:.3f}  "
-                          f"σ²={self.kernel.signal_var:.3f}  "
-                          f"TR_ρ={self.tr.radius}  max_eff_len={self.max_eff_len}")
-                else:
-                    print(f"  [HP] θ_m={self.kernel.theta_m:.3f}  "
-                          f"θ_g={self.kernel.theta_g:.3f}  "
-                          f"σ²={self.kernel.signal_var:.3f}  "
-                          f"TR_ρ={self.tr.radius}  max_eff_len={self.max_eff_len}")
+                print(f"  [HP] θ_m={self.kernel.theta_m:.3f}  "
+                      f"θ_g={self.kernel.theta_g:.3f}  "
+                      f"σ²={self.kernel.signal_var:.3f}  "
+                      f"TR_ρ={self.tr.radius}  max_eff_len={self.max_eff_len}")
                 # HP 变化后重新归一化并拟合
                 ya, ym, ys = self._normalize()
                 yn = (ya - ym) / ys
@@ -1849,18 +1850,16 @@ class BOiLSOptimizer:
             evo_cands = self._evo_candidates(self.n_cand * 2)
             rand_cands = [self._rand_seq() for _ in range(self.n_cand)]
             all_cands = tr_cands + evo_cands + rand_cands
-            rand_start = len(tr_cands) + len(evo_cands)
             filtered_orig_indices = None
             if self._use_pseudo and self.surrogate and self.surrogate.enabled:
                 preds_all = self.surrogate.predict_batch(all_cands)
                 products_all = preds_all[:, 0] * preds_all[:, 1]
                 sorted_idx = np.argsort(products_all)
-                n_pos, n_neg = 20, 10
+                n_neg = 30
                 ntot = len(all_cands)
-                if ntot > n_pos + n_neg:
-                    pos_idx = sorted_idx[:n_pos]
+                if ntot > n_neg:
                     neg_idx = sorted_idx[-n_neg:]
-                    pseudo_idx = np.concatenate([pos_idx, neg_idx])
+                    pseudo_idx = neg_idx
                     st0 = self.evaluator.init_stats
                     if (self.evaluator.mapping
                             and st0.get("area", 0) > 0
@@ -1873,9 +1872,9 @@ class BOiLSOptimizer:
                     pseudo_products = products_all[pseudo_idx] / (init_a * init_d)
                     self._pseudo_seqs = [all_cands[i] for i in pseudo_idx]
                     self._pseudo_nc_raw = list(-pseudo_products)
-                    middle_idx = sorted_idx[n_pos:-n_neg]
-                    all_cands = [all_cands[i] for i in middle_idx]
-                    filtered_orig_indices = np.asarray(middle_idx, dtype=np.int64)
+                    good_idx = sorted_idx[:-n_neg]
+                    all_cands = [all_cands[i] for i in good_idx]
+                    filtered_orig_indices = np.asarray(good_idx, dtype=np.int64)
                 else:
                     all_cands, filtered_orig_indices = self.surrogate.filter_candidates(
                         all_cands, return_orig_indices=True
@@ -1891,19 +1890,9 @@ class BOiLSOptimizer:
                 and len(self.X) >= self.n_init + 10
             )
             top_k = min(self.batch_k, len(all_cands))
-            # RBF 嵌入核已由 surrogate 驱动 GP，退化时用 surrogate 再排序意义不大
-            _use_surrogate_degraded = (
-                _gp_degraded and self.surrogate and self.surrogate.enabled
-                and not self._use_rbf
-            )
-            if _gp_degraded and self._use_rbf:
-                print(
-                    f"  [GP] jitter={self.gp.last_jitter:.0e} 偏高，"
-                    f"RBF 嵌入核下仍用 EI 选候选"
-                )
 
-            if _use_surrogate_degraded:
-                # SSK 路径：surrogate 按预测 area×delay 升序选 top-K
+            if _gp_degraded and self.surrogate and self.surrogate.enabled:
+                # surrogate 接管：直接按预测 area×delay 升序选 top-K
                 print(
                     f"  [Surrogate] GP退化(jitter={self.gp.last_jitter:.0e})，"
                     f"模型接管候选选择"
@@ -1914,41 +1903,13 @@ class BOiLSOptimizer:
                 self.evaluator._ei_hint = 1.0
                 self.evaluator._ei_threshold = 0.5
             else:
-                # ---- 正常：GP 对全部候选打 EI 分（纯推断，无 ABC 调用）----
                 all_feats = [self._compute_seq_feat(c) for c in all_cands]
                 mu, var = self.gp.predict(all_cands, X_new_feats=all_feats)
-                yb_n = (self.best_y - ym) / ys
-                ei = expected_improvement(mu, var, yb_n)
-
-                ei_max = float(np.max(ei))
-                ei_p80 = float(np.percentile(ei, 80))
-                self.evaluator._ei_hint = ei_max
-                self.evaluator._ei_threshold = ei_p80
-
-                # ---- 选 top-K 候选实际评估（EGBO 批量）----
-                if filtered_orig_indices is not None:
-                    rand_pool = [
-                        j for j, oi in enumerate(filtered_orig_indices)
-                        if int(oi) >= rand_start
-                    ]
-                    if rand_pool:
-                        rp = np.asarray(rand_pool, dtype=np.intp)
-                        rand_best = int(rp[np.argmax(ei[rp])])
-                    else:
-                        rand_best = int(np.argmax(ei))
-                else:
-                    rand_offset = rand_start
-                    if rand_offset < len(ei):
-                        rand_best = rand_offset + int(np.argmax(ei[rand_offset:]))
-                    else:
-                        rand_best = int(np.argmax(ei))
-                all_sorted = list(np.argsort(ei)[::-1])
-                top_indices = [rand_best]
-                for i in all_sorted:
-                    if len(top_indices) >= top_k:
-                        break
-                    if i != rand_best:
-                        top_indices.append(int(i))
+                # Thompson Sampling：从后验分布采样，天然平衡探索与利用
+                ts_samples = self.rng.normal(mu, np.sqrt(np.maximum(var, 1e-10)))
+                self.evaluator._ei_hint = float(np.max(mu))
+                self.evaluator._ei_threshold = float(np.percentile(mu, 80))
+                top_indices = list(np.argsort(ts_samples)[::-1][:top_k])
 
             for idx in top_indices:
                 if t >= n_iters:
@@ -1963,6 +1924,30 @@ class BOiLSOptimizer:
                 self._update_elite(pick, cost)
 
                 improved = nc > self.best_y
+                star = "★" if improved else " "
+                ev = self.evaluator
+                st = getattr(ev, "_last_stats", None)
+                if not isinstance(st, dict) or not st:
+                    st = {}
+                    if ev._circuit_features:
+                        init = ev.init_stats
+                        feat = np.asarray(ev._circuit_features[-1], dtype=float)
+                        st = {
+                            "nodes": float(feat[0] * max(init.get("nodes", 1), 1)),
+                            "levels": float(
+                                feat[1] * max(init.get("levels", 1), 1)),
+                        }
+                    if not st and getattr(ev, "best_stats", None):
+                        st = dict(ev.best_stats)
+                area = st.get("area", st.get("nodes", -1))
+                delay = st.get("delay", st.get("levels", -1))
+                seq_str = "; ".join(ev.indices_to_strs(pick))
+                print(
+                    f"  [{t+1:02d}][full]{star} cost={cost:.6f}  "
+                    f"len={len(pick)}/{self.max_eff_len}"
+                    f"  area={area}  delay={delay}\n"
+                    f"         序列: {seq_str}"
+                )
                 if improved:
                     self.best_y = nc
                     self.best_x = list(pick)
@@ -2075,12 +2060,7 @@ def save_results(evaluator: SynthesisEvaluator, optimizer: BOiLSOptimizer,
         print(f"最优统计:    nodes={best.get('nodes', 'N/A')}  levels={best.get('levels', 'N/A')}")
         print(f"nodes 改善:  {results['improvement']['nodes']}")
         print(f"levels 改善: {results['improvement']['levels']}")
-    if optimizer._use_rbf:
-        print(f"GP 超参数 (RBF):  length_scale={optimizer.kernel.length_scale:.3f}  "
-              f"σ²={optimizer.kernel.signal_var:.3f}")
-    else:
-        print(f"SSK 超参数:  θ_m={optimizer.kernel.theta_m:.3f}  "
-              f"θ_g={optimizer.kernel.theta_g:.3f}")
+    print(f"SSK 超参数:  θ_m={optimizer.kernel.theta_m:.3f}  θ_g={optimizer.kernel.theta_g:.3f}")
     print(f"TR 重启:     {optimizer.tr.restarts} 次")
     print(f"\n最优序列:")
     print(f"  {seq_str}")
@@ -2210,6 +2190,8 @@ def parse_args():
                         help="pruning_product_intersections.csv路径，用于判断安全剪枝比")
     parser.add_argument("--surrogate_device", type=str, default="cpu",
                         help="模型推断设备 (default: cpu)")
+    parser.add_argument("--surrogate_expand", type=int, default=10,
+                        help="候选池扩大倍数 (default: 10)")
 
     return parser.parse_args()
 
@@ -2274,6 +2256,7 @@ def main():
         circuit_weight=args.circuit_weight,
         enable_seeded_init=not args.no_seeded_init,
         surrogate=surrogate,
+        surrogate_expand=args.surrogate_expand,
     )
 
     print(f"\n{'='*60}")
