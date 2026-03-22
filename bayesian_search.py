@@ -1185,7 +1185,7 @@ class BOiLSOptimizer:
                  batch_k=2, elite_size=15,
                  enable_cc_ssk=True, circuit_weight=0.3,
                  enable_seeded_init=True,
-                 surrogate=None, surrogate_skip_delta=0.05,
+                 surrogate=None, surrogate_skip_delta=0.08,
                  ts_prob=0.5, diversity_thresh=0.8):
         self.evaluator = evaluator
         self.n_actions = n_actions
@@ -1246,6 +1246,8 @@ class BOiLSOptimizer:
 
         self.ts_prob = ts_prob
         self.diversity_thresh = diversity_thresh
+
+        self._evaluated_set: set = set()   # 已评估序列的规范化 tuple 集合
 
     def _compute_seq_feat(self, seq: list) -> np.ndarray:
         """从序列索引提取结构特征，无需执行ABC，可用于任意候选序列。
@@ -1497,13 +1499,30 @@ class BOiLSOptimizer:
         print(f"[CircuitSyn] {label} ({self.n_init} 样本, "
               f"初始有效长度上界={self.max_eff_len}) ...")
 
-        init_seqs = (self._seeded_init_sequences(self.n_init)
-                     if self.enable_seeded_init
-                     else [self._rand_seq() for _ in range(self.n_init)])
+        _init_pool_mult = 5   # 候选池扩大倍数
+        _init_pool_size = self.n_init * _init_pool_mult
+
+        if self.enable_seeded_init:
+            _init_pool = self._seeded_init_sequences(_init_pool_size)
+        else:
+            _init_pool = [self._rand_seq() for _ in range(_init_pool_size)]
+
+        if self.surrogate and self.surrogate.enabled and len(_init_pool) > self.n_init:
+            _init_preds = self.surrogate.predict_batch(_init_pool)   # (N, 2)
+            _init_prods = _init_preds[:, 0] * _init_preds[:, 1]
+            _top_idx = np.argsort(_init_prods)[:self.n_init]
+            init_seqs = [_init_pool[i] for i in _top_idx]
+            print(f"[Surrogate] Phase1 代理引导：从 {_init_pool_size} 个候选中选出 top-{self.n_init}")
+        else:
+            init_seqs = _init_pool[:self.n_init]
 
         for seq in init_seqs:
             if timeout > 0 and time.time() - t0 > timeout:
                 break
+            _key = tuple(self._canonicalize(seq))
+            if _key in self._evaluated_set:
+                continue
+            self._evaluated_set.add(_key)
             cost = self.evaluator(seq)
             nc = -cost
             self.X.append(seq)
@@ -1531,6 +1550,31 @@ class BOiLSOptimizer:
             )
 
         print(f"[CircuitSyn] 初始化完成, best_cost={-self.best_y:.6f}")
+
+        # ---- GP 伪观测热启动（仅当代理可用时）----
+        if self.surrogate and self.surrogate.enabled:
+            _n_pseudo = 300
+            _pseudo_seqs = [self._rand_seq() for _ in range(_n_pseudo)]
+            _pseudo_preds = self.surrogate.predict_batch(_pseudo_seqs)  # (N, 2)
+            _pseudo_costs = np.array([self._surr_to_cost(p) for p in _pseudo_preds])
+            _pseudo_nc = -_pseudo_costs                               # neg_cost
+            ya_real, ym, ys = self._normalize()
+            yn_real = (ya_real - ym) / ys
+            _pseudo_yn = (_pseudo_nc - ym) / ys
+            _yn_aug = np.concatenate([yn_real, _pseudo_yn])
+            _orig_noise = self.kernel.signal_var
+            _cc_save = self.kernel._circuit_feats
+            self.kernel._circuit_feats = None
+            self.kernel.set_params(self.kernel.theta_m, self.kernel.theta_g,
+                                   signal_var=_orig_noise * 3.0)
+            _X_aug = list(self.X) + _pseudo_seqs
+            self.gp.fit(_X_aug, _yn_aug)
+            self.kernel.set_params(self.kernel.theta_m, self.kernel.theta_g,
+                                   signal_var=_orig_noise)
+            self.kernel._circuit_feats = _cc_save
+
+            print(f"[Surrogate] GP 伪观测热启动：注入 {_n_pseudo} 个虚拟数据点")
+
         if self.surrogate and self.surrogate.enabled:
             print(f"[Surrogate] 代理模型已启用，剪枝比={self.surrogate.safe_cut_ratio*100:.0f}%，"
                   f"skip_delta={self.surrogate_skip_delta}")
@@ -1567,18 +1611,22 @@ class BOiLSOptimizer:
             # ---- 周期性超参数优化 ----
             # bo_step 按评估次数计（t 从 n_init 起计 BO 轮次）
             bo_step = t - self.n_init
+            _min_data_for_hp = self.n_init + 10   # 至少积累 n_init+10 个真实点再做 HP 优化
             if (self.hp_interval > 0
                     and bo_step > 0
-                    and bo_step % self.hp_interval == 0):
-                self.gp.optimize_hp(n_restarts=2, max_iter=5)
-                print(f"  [HP] θ_m={self.kernel.theta_m:.3f}  "
-                      f"θ_g={self.kernel.theta_g:.3f}  "
-                      f"σ²={self.kernel.signal_var:.3f}  "
-                      f"TR_ρ={self.tr.radius}  max_eff_len={self.max_eff_len}")
-                # HP 变化后重新归一化并拟合
-                ya, ym, ys = self._normalize()
-                yn = (ya - ym) / ys
-                self.gp.fit(self.X, yn)
+                    and len(self.X) >= _min_data_for_hp):
+                _adaptive_interval = (self.hp_interval
+                                      if self.tr.radius > self.max_eff_len // 2
+                                      else max(self.hp_interval // 2, 5))
+                if bo_step % _adaptive_interval == 0:
+                    self.gp.optimize_hp(n_restarts=2, max_iter=5)
+                    print(f"  [HP] θ_m={self.kernel.theta_m:.3f}  "
+                          f"θ_g={self.kernel.theta_g:.3f}  "
+                          f"σ²={self.kernel.signal_var:.3f}  "
+                          f"TR_ρ={self.tr.radius}  max_eff_len={self.max_eff_len}")
+                    ya, ym, ys = self._normalize()
+                    yn = (ya - ym) / ys
+                    self.gp.fit(self.X, yn)
 
             # ---- TR 收敛处理（含 PLE 扩展）----
             if self.tr.dead:
@@ -1609,6 +1657,11 @@ class BOiLSOptimizer:
                 # 注入 EI hint（重启时无 GP 预测，强制完整评估）
                 self.evaluator._ei_hint = 1.0
                 self.evaluator._ei_threshold = 0.5
+                _key = tuple(self._canonicalize(seq))
+                if _key in self._evaluated_set:
+                    seq = self._rand_seq()
+                    _key = tuple(self._canonicalize(seq))
+                self._evaluated_set.add(_key)
                 cost = self.evaluator(seq)
                 nc = -cost
                 self.X.append(seq)
@@ -1705,6 +1758,12 @@ class BOiLSOptimizer:
                     break
                 pick = all_cands[int(idx)]
                 pick_list = list(pick)
+
+                _key = tuple(self._canonicalize(pick_list))
+                if _key in self._evaluated_set:
+                    t += 1
+                    continue
+                self._evaluated_set.add(_key)
 
                 # ---- 代理+GP 联合判断：是否跳过 ABC ----
                 _surr_skip = False
@@ -1962,7 +2021,8 @@ def parse_args():
     parser.add_argument("--ssk_order", type=int, default=2,
                         help="SSK 子序列阶数 p, 越高捕获结构越精细但计算越慢 (default: 2)")
     parser.add_argument("--hp_interval", type=int, default=20,
-                        help="GP 超参数优化间隔 (每 N 轮优化一次, 0=禁用) (default: 20)")
+                        help="GP 超参优化基准间隔；前 n_init+10 个真实点之前不触发，"
+                             "TR 半径较小时间隔减半（下限 5），0=禁用 (default: 20)")
     parser.add_argument("--seed", type=int, default=42,
                         help="随机种子 (default: 42)")
     parser.add_argument("--output", type=str, default="",
@@ -2014,8 +2074,8 @@ def parse_args():
                         help="AAG 文件目录，自动拼接 <circuit_name>.aag（--surrogate_aag 优先）")
     parser.add_argument("--surrogate_csv", type=str, default="",
                         help="代理模型可靠性 CSV 路径（可选，空=跳过可靠性检查）")
-    parser.add_argument("--surrogate_skip_delta", type=float, default=0.1,
-                        help="联合预测比 best_cost 高出超过 delta 时跳过 ABC (default: 0.1)")
+    parser.add_argument("--surrogate_skip_delta", type=float, default=0.08,
+                        help="联合预测比 best_cost 高出超过 delta 时跳过 ABC (default: 0.08)")
 
     return parser.parse_args()
 
