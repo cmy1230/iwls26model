@@ -86,7 +86,7 @@ class ReliabilityChecker:
 
     @staticmethod
     def check(circuit_name: str, csv_path: str, ckpt_dir: str) -> dict:
-        result = {"enabled": False, "safe_cut_ratio": 0.0}
+        result = {"enabled": False, "safe_cut_ratio": 0.0, "r2_combined": 0.0}
 
         ckpt_path = os.path.join(ckpt_dir, f"iwls26_{circuit_name}.pt")
         if not os.path.isfile(ckpt_path):
@@ -96,6 +96,7 @@ class ReliabilityChecker:
         if not csv_path or not os.path.isfile(csv_path):
             result["enabled"] = True
             result["safe_cut_ratio"] = 0.50
+            result["r2_combined"] = 0.50
             return result
 
         row = None
@@ -130,9 +131,28 @@ class ReliabilityChecker:
             print(f"[Surrogate] {circuit_name} 各剪枝比例均超过20%误伤阈值，禁用")
             return result
 
+        ra = _row_get_ci(row, "r2_area")
+        rd = _row_get_ci(row, "r2_delay")
+        if (
+            ra is not None
+            and str(ra).strip() != ""
+            and rd is not None
+            and str(rd).strip() != ""
+        ):
+            try:
+                r2_combined = (float(ra) + float(rd)) / 2.0
+            except (TypeError, ValueError):
+                r2_combined = safe_cut_ratio
+        else:
+            r2_combined = safe_cut_ratio
+
         result["enabled"] = True
         result["safe_cut_ratio"] = safe_cut_ratio
-        print(f"[Surrogate] {circuit_name} 安全剪枝比={safe_cut_ratio*100:.0f}%")
+        result["r2_combined"] = r2_combined
+        print(
+            f"[Surrogate] {circuit_name} 安全剪枝比={safe_cut_ratio*100:.0f}%, "
+            f"r2={r2_combined:.2f}"
+        )
         return result
 
 
@@ -148,12 +168,15 @@ class ModelSurrogate:
     ):
         self.enabled = False
         self.safe_cut_ratio = 0.0
+        self.r2_combined = 0.0
         self.device = torch.device(device)
 
         info = ReliabilityChecker.check(circuit_name, csv_path, ckpt_dir)
         if not info["enabled"]:
             return
         self.safe_cut_ratio = info["safe_cut_ratio"]
+        self.r2_combined = info.get("r2_combined", self.safe_cut_ratio)
+        self._emb_cache: dict = {}
 
         ckpt_path = os.path.join(ckpt_dir, f"iwls26_{circuit_name}.pt")
         try:
@@ -190,7 +213,10 @@ class ModelSurrogate:
         self.encoder = ActionEncoder(actions)
 
         self.enabled = True
-        print(f"[Surrogate] 启用成功，安全剪枝比={self.safe_cut_ratio*100:.0f}%")
+        print(
+            f"[Surrogate] 启用成功，安全剪枝比={self.safe_cut_ratio*100:.0f}%，"
+            f"r2={self.r2_combined:.2f}"
+        )
 
     @torch.no_grad()
     def predict_batch(self, seqs: List[List[int]]) -> np.ndarray:
@@ -207,6 +233,27 @@ class ModelSurrogate:
         if self.normalizer is not None:
             pred = self.normalizer.denormalize(pred)
         return pred.cpu().numpy()
+
+    @torch.no_grad()
+    def embed_sequences(self, seqs: List[List[int]]) -> np.ndarray:
+        """返回 LSTM 序列嵌入 (N, seq_hidden_dim)，带缓存。"""
+        from dataset_loader import pad_sequences
+
+        if len(seqs) == 0:
+            h = int(getattr(self.model, "seq_hidden_dim", 128))
+            return np.zeros((0, h), dtype=np.float64)
+
+        uncached = [s for s in seqs if tuple(s) not in self._emb_cache]
+        if uncached:
+            tensors = [self.encoder.encode(s) for s in uncached]
+            seq_pad, seq_len = pad_sequences(tensors)
+            seq_pad = seq_pad.to(self.device)
+            seq_len = seq_len.to(self.device)
+            s_emb = self.model.lstm(seq_pad, seq_len)  # (N_unc, seq_hidden_dim)
+            emb_np = s_emb.cpu().numpy()
+            for s, e in zip(uncached, emb_np):
+                self._emb_cache[tuple(s)] = e
+        return np.stack([self._emb_cache[tuple(s)] for s in seqs])
 
     def filter_candidates(
         self,
