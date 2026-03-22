@@ -2,7 +2,7 @@
 
 import csv
 import os
-from typing import List
+from typing import Any, Dict, List, Tuple, Union
 
 import numpy as np
 import torch
@@ -12,6 +12,22 @@ from infer_per_circuit import _build_model, _extract_pred, _forward_with_cached_
 from label_normalizer import LabelNormalizer
 from model import load_pt_checkpoint
 from seq_preprocessing import DEFAULT_COMMANDS
+
+
+def _norm_header_key(k: Any) -> str:
+    """表头或行键：去 BOM、首尾空白，便于与 'circuit' 等列名匹配。"""
+    if k is None:
+        return ""
+    return str(k).strip().lstrip("\ufeff").lower()
+
+
+def _row_get_ci(row: Dict[str, Any], key: str) -> Any:
+    """大小写不敏感、容忍表头 BOM（\\ufeffcircuit）的列取值。"""
+    want = _norm_header_key(key)
+    for rk, rv in row.items():
+        if _norm_header_key(rk) == want:
+            return rv
+    return None
 
 
 class ActionEncoder:
@@ -76,19 +92,30 @@ class ReliabilityChecker:
             return result
 
         row = None
-        with open(csv_path, newline="", encoding="utf-8") as f:
-            for r in csv.DictReader(f):
-                if r["circuit"].strip() == circuit_name:
+        # utf-8-sig：去掉文件头 BOM，避免首列表名变成 "\\ufeffcircuit" 导致 KeyError
+        with open(csv_path, newline="", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            fieldnames = reader.fieldnames or []
+            if not any(_norm_header_key(n) == "circuit" for n in fieldnames):
+                print(
+                    "[Surrogate] CSV 无 circuit 列（检查表头拼写、或是否用 utf-8-sig/BOM），禁用模型加速"
+                )
+                return result
+            for r in reader:
+                c = _row_get_ci(r, "circuit")
+                if c is not None and str(c).strip() == circuit_name:
                     row = r
                     break
 
-        if row is None or row.get("status") != "ok":
+        st = _row_get_ci(row, "status") if row is not None else None
+        if row is None or str(st or "").strip() != "ok":
             print(f"[Surrogate] CSV中未找到{circuit_name}或状态非ok，禁用")
             return result
 
         safe_cut_ratio = 0.0
         for col, ratio in ReliabilityChecker.CUT_LEVELS:
-            val = float(row.get(col, 100.0))
+            v = _row_get_ci(row, col)
+            val = float(v) if v is not None and str(v).strip() != "" else 100.0
             if val < ReliabilityChecker.MIS_HIT_THRESHOLD:
                 safe_cut_ratio = ratio
 
@@ -174,9 +201,19 @@ class ModelSurrogate:
             pred = self.normalizer.denormalize(pred)
         return pred.cpu().numpy()
 
-    def filter_candidates(self, candidates: List[List[int]]) -> List[List[int]]:
-        """按 safe_cut_ratio 剪掉预测最差的序列，返回保留的子集。不启用时原样返回。"""
+    def filter_candidates(
+        self,
+        candidates: List[List[int]],
+        return_orig_indices: bool = False,
+    ) -> Union[List[List[int]], Tuple[List[List[int]], np.ndarray]]:
+        """按 safe_cut_ratio 剪掉预测最差的序列，返回保留的子集。不启用时原样返回。
+
+        return_orig_indices=True 时额外返回 keep 对应的原列表下标（过滤后第 j 项来自
+        candidates[orig_indices[j]]），供调用方在重排后仍识别某区段（如 rand 段）。
+        """
         if not self.enabled or len(candidates) == 0:
+            if return_orig_indices:
+                return candidates, np.arange(len(candidates), dtype=np.int64)
             return candidates
 
         preds = self.predict_batch(candidates)
@@ -184,4 +221,7 @@ class ModelSurrogate:
 
         n_keep = max(1, int(len(candidates) * (1.0 - self.safe_cut_ratio)))
         keep_idx = np.argsort(products)[:n_keep]
-        return [candidates[i] for i in keep_idx]
+        out = [candidates[i] for i in keep_idx]
+        if return_orig_indices:
+            return out, keep_idx.astype(np.int64, copy=False)
+        return out

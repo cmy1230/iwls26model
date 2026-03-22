@@ -105,6 +105,33 @@ MACRO_ACTIONS = [
 ACTIONS = ATOMIC_ACTIONS + MACRO_ACTIONS + [NOP]
 
 
+def circuit_stem_for_surrogate(input_path: str) -> str:
+    """从 ``--input_file`` 得到与 per-circuit ckpt（``iwls26_<name>.pt``）及 surrogate CSV ``circuit`` 列对齐的名称。
+
+    若文件名 stem 中含 ``.parmys`` 中缀（例如 ``or1200.parmys.aag`` → stem ``or1200.parmys``），
+    去掉所有 ``.parmys`` 段后把剩余段用 ``.`` 接回（``or1200.parmys.extra`` → ``or1200.extra``）。
+    """
+    stem = Path(input_path).stem
+    parts = [p for p in stem.split(".parmys") if p]
+    return ".".join(parts) if parts else stem
+
+
+def resolve_surrogate_aag_path(aag_dir: str, circuit_name: str, fallback_input: str) -> str:
+    """Surrogate 用 GNN 编码的 AAG：优先 ``<aag_dir>/<circuit_name>.aag``（与训练数据目录一致），否则用 ABC 的 input。"""
+    root = (aag_dir or "").strip()
+    fb = str(Path(fallback_input).resolve())
+    if not root:
+        return fb
+    cand = Path(root).expanduser() / f"{circuit_name}.aag"
+    if cand.is_file():
+        return str(cand.resolve())
+    print(
+        f"[Surrogate] 未找到标准 AAG {cand}，回退使用 input_file: {fb}",
+        flush=True,
+    )
+    return fb
+
+
 def canonicalize_seq(seq, nop_idx):
     """NOP 尾部规范化: 保持非 NOP 元素相对顺序, 将所有 NOP 推到末尾。
     消除等价表示冗余, 例如 [A, NOP, B] 和 [A, B, NOP] 均规范化为 [A, B, NOP]。
@@ -1564,8 +1591,12 @@ class BOiLSOptimizer:
             evo_cands = self._evo_candidates(self.n_cand * 2 * _exp)
             rand_cands = [self._rand_seq() for _ in range(self.n_cand * _exp)]
             all_cands = tr_cands + evo_cands + rand_cands
+            rand_start = len(tr_cands) + len(evo_cands)
+            filtered_orig_indices = None
             if self.surrogate and self.surrogate.enabled:
-                all_cands = self.surrogate.filter_candidates(all_cands)
+                all_cands, filtered_orig_indices = self.surrogate.filter_candidates(
+                    all_cands, return_orig_indices=True
+                )
 
             # ---- GP 对全部候选打 EI 分（纯推断，无 ABC 调用）----
             all_feats = [self._compute_seq_feat(c) for c in all_cands]
@@ -1582,11 +1613,23 @@ class BOiLSOptimizer:
             # ---- 选 top-K 候选实际评估（EGBO 批量）----
             # 强制从 rand_cands 中保留 1 个 EI 最高者，其余按全局 EI 递减补满
             top_k = min(self.batch_k, len(all_cands))
-            rand_offset = len(tr_cands) + len(evo_cands)
-            if rand_offset < len(ei):
-                rand_best = rand_offset + int(np.argmax(ei[rand_offset:]))
+            if filtered_orig_indices is not None:
+                rand_pool = [
+                    j
+                    for j, oi in enumerate(filtered_orig_indices)
+                    if int(oi) >= rand_start
+                ]
+                if rand_pool:
+                    rp = np.asarray(rand_pool, dtype=np.intp)
+                    rand_best = int(rp[np.argmax(ei[rp])])
+                else:
+                    rand_best = int(np.argmax(ei))
             else:
-                rand_best = int(np.argmax(ei))
+                rand_offset = rand_start
+                if rand_offset < len(ei):
+                    rand_best = rand_offset + int(np.argmax(ei[rand_offset:]))
+                else:
+                    rand_best = int(np.argmax(ei))
             all_sorted = list(np.argsort(ei)[::-1])
             top_indices = [rand_best]
             for i in all_sorted:
@@ -1839,6 +1882,13 @@ def parse_args():
     # ---- 模块G: 模型代理加速 ----
     parser.add_argument("--surrogate_ckpt_dir", type=str, default="",
                         help="per-circuit ckpt目录（含iwls26_<circuit>.pt），空=禁用模型加速")
+    parser.add_argument(
+        "--surrogate_aag_dir",
+        type=str,
+        default="/home/yfdai/asap/data/aag",
+        help="与训练一致的 AAG 根目录，加载 <电路名>.aag 供 surrogate 图编码；"
+             "传空字符串则始终用 --input_file（回退行为）",
+    )
     parser.add_argument("--surrogate_csv", type=str, default="",
                         help="pruning_product_intersections.csv路径，用于判断安全剪枝比")
     parser.add_argument("--surrogate_device", type=str, default="cpu",
@@ -1879,10 +1929,13 @@ def main():
     surrogate = None
     if args.surrogate_ckpt_dir:
         from model_surrogate import ModelSurrogate
-        circuit_name = Path(args.input_file).stem
+        circuit_name = circuit_stem_for_surrogate(args.input_file)
+        aag_for_surrogate = resolve_surrogate_aag_path(
+            args.surrogate_aag_dir, circuit_name, args.input_file
+        )
         surrogate = ModelSurrogate(
             circuit_name=circuit_name,
-            aag_path=args.input_file,
+            aag_path=aag_for_surrogate,
             ckpt_dir=args.surrogate_ckpt_dir,
             actions=actions,
             csv_path=(args.surrogate_csv or ""),

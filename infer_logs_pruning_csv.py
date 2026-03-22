@@ -28,6 +28,7 @@ from split_dataset import split_dataset
 from train import build_dataset, pruning_overlap_top_pred_largest_vs_true_smallest
 
 
+
 def _parse_circuit_from_log(log_path: Path) -> str:
     with open(log_path, "r", encoding="utf-8", errors="replace") as f:
         first = f.readline()
