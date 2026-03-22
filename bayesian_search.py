@@ -685,7 +685,7 @@ class SSKKernel:
 
     def set_params(self, theta_m, theta_g, signal_var=None):
         self.theta_m = float(np.clip(theta_m, 0.01, 0.99))
-        self.theta_g = float(np.clip(theta_g, 0.01, 0.99))
+        self.theta_g = float(np.clip(theta_g, 0.20, 0.99))
         if signal_var is not None:
             self.signal_var = max(float(signal_var), 0.01)
         self.clear_cache()
@@ -759,6 +759,7 @@ class GaussianProcessSSK:
         self.alpha = None
         self._K_cache = None
         self._hp_stamp = None
+        self.last_jitter = 0.0  # 最近一次 _factor 实际使用的 jitter
 
     def _hp_key(self):
         k = self.kernel
@@ -806,6 +807,7 @@ class GaussianProcessSSK:
                 K_work[np.diag_indices(n)] += jitter
                 self.L_cho, self._lo = cho_factor(K_work, lower=True)
                 self.alpha = cho_solve((self.L_cho, self._lo), self.y)
+                self.last_jitter = jitter
                 if jitter > 1e-4:
                     print(f"  [GP] Cholesky 收敛 (jitter={jitter:.0e})")
                 return
@@ -816,6 +818,7 @@ class GaussianProcessSSK:
         K_fixed = eigvecs @ np.diag(eigvals) @ eigvecs.T
         self.L_cho, self._lo = cho_factor(K_fixed, lower=True)
         self.alpha = cho_solve((self.L_cho, self._lo), self.y)
+        self.last_jitter = float("inf")
         print("  [GP] 特征值修正强制正定")
 
     def predict(self, X_new, X_new_feats=None):
@@ -850,12 +853,12 @@ class GaussianProcessSSK:
             return self.neg_log_ml()
 
         for _ in range(n_restarts):
-            x0 = [rng.uniform(0.1, 0.95), rng.uniform(0.1, 0.95),
+            x0 = [rng.uniform(0.1, 0.95), rng.uniform(0.20, 0.95),
                    rng.uniform(0.5, 2.0)]
             try:
                 r = scipy_minimize(
                     obj, x0,
-                    bounds=[(0.05, 0.95), (0.05, 0.95), (0.05, 5.0)],
+                    bounds=[(0.05, 0.95), (0.20, 0.95), (0.05, 5.0)],
                     method="L-BFGS-B",
                     options={"maxiter": max_iter, "ftol": 1e-3},
                 )
@@ -1598,45 +1601,60 @@ class BOiLSOptimizer:
                     all_cands, return_orig_indices=True
                 )
 
-            # ---- GP 对全部候选打 EI 分（纯推断，无 ABC 调用）----
-            all_feats = [self._compute_seq_feat(c) for c in all_cands]
-            mu, var = self.gp.predict(all_cands, X_new_feats=all_feats)
-            yb_n = (self.best_y - ym) / ys
-            ei = expected_improvement(mu, var, yb_n)
-
-            # 注入 EI hint 给多保真度评估器
-            ei_max = float(np.max(ei))
-            ei_p80 = float(np.percentile(ei, 80))
-            self.evaluator._ei_hint = ei_max
-            self.evaluator._ei_threshold = ei_p80
-
-            # ---- 选 top-K 候选实际评估（EGBO 批量）----
-            # 强制从 rand_cands 中保留 1 个 EI 最高者，其余按全局 EI 递减补满
+            # ---- GP 退化检测（层次3）----
+            _gp_degraded = (
+                self.gp.last_jitter > 1e-3
+                and len(self.X) >= self.n_init + 10
+            )
             top_k = min(self.batch_k, len(all_cands))
-            if filtered_orig_indices is not None:
-                rand_pool = [
-                    j
-                    for j, oi in enumerate(filtered_orig_indices)
-                    if int(oi) >= rand_start
-                ]
-                if rand_pool:
-                    rp = np.asarray(rand_pool, dtype=np.intp)
-                    rand_best = int(rp[np.argmax(ei[rp])])
-                else:
-                    rand_best = int(np.argmax(ei))
+
+            if _gp_degraded and self.surrogate and self.surrogate.enabled:
+                # surrogate 接管：直接按预测 area×delay 升序选 top-K
+                print(
+                    f"  [Surrogate] GP退化(jitter={self.gp.last_jitter:.0e})，"
+                    f"模型接管候选选择"
+                )
+                preds = self.surrogate.predict_batch(all_cands)
+                products = preds[:, 0] * preds[:, 1]
+                top_indices = list(np.argsort(products)[:top_k])
+                self.evaluator._ei_hint = 1.0
+                self.evaluator._ei_threshold = 0.5
             else:
-                rand_offset = rand_start
-                if rand_offset < len(ei):
-                    rand_best = rand_offset + int(np.argmax(ei[rand_offset:]))
+                # ---- 正常：GP 对全部候选打 EI 分（纯推断，无 ABC 调用）----
+                all_feats = [self._compute_seq_feat(c) for c in all_cands]
+                mu, var = self.gp.predict(all_cands, X_new_feats=all_feats)
+                yb_n = (self.best_y - ym) / ys
+                ei = expected_improvement(mu, var, yb_n)
+
+                ei_max = float(np.max(ei))
+                ei_p80 = float(np.percentile(ei, 80))
+                self.evaluator._ei_hint = ei_max
+                self.evaluator._ei_threshold = ei_p80
+
+                # ---- 选 top-K 候选实际评估（EGBO 批量）----
+                if filtered_orig_indices is not None:
+                    rand_pool = [
+                        j for j, oi in enumerate(filtered_orig_indices)
+                        if int(oi) >= rand_start
+                    ]
+                    if rand_pool:
+                        rp = np.asarray(rand_pool, dtype=np.intp)
+                        rand_best = int(rp[np.argmax(ei[rp])])
+                    else:
+                        rand_best = int(np.argmax(ei))
                 else:
-                    rand_best = int(np.argmax(ei))
-            all_sorted = list(np.argsort(ei)[::-1])
-            top_indices = [rand_best]
-            for i in all_sorted:
-                if len(top_indices) >= top_k:
-                    break
-                if i != rand_best:
-                    top_indices.append(int(i))
+                    rand_offset = rand_start
+                    if rand_offset < len(ei):
+                        rand_best = rand_offset + int(np.argmax(ei[rand_offset:]))
+                    else:
+                        rand_best = int(np.argmax(ei))
+                all_sorted = list(np.argsort(ei)[::-1])
+                top_indices = [rand_best]
+                for i in all_sorted:
+                    if len(top_indices) >= top_k:
+                        break
+                    if i != rand_best:
+                        top_indices.append(int(i))
 
             for idx in top_indices:
                 if t >= n_iters:
