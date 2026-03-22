@@ -1600,6 +1600,11 @@ class BOiLSOptimizer:
                 all_cands, filtered_orig_indices = self.surrogate.filter_candidates(
                     all_cands, return_orig_indices=True
                 )
+                # 保持候选数与无 surrogate 时一致，避免 GP/feat 计算量膨胀
+                orig_size = self.n_cand * 4  # tr + evo×2 + rand = 4×n_cand
+                all_cands = all_cands[:orig_size]
+                if filtered_orig_indices is not None:
+                    filtered_orig_indices = filtered_orig_indices[:orig_size]
 
             # ---- GP 退化检测（层次3）----
             _gp_degraded = (

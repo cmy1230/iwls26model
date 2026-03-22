@@ -40,6 +40,14 @@ class ActionEncoder:
         for a in actions:
             self._action_rows.append(self._parse_action(a))
 
+        # 预计算：每个 action_index → 对应 one-hot 行块（numpy），encode 时拼接，避免逐 token new tensor
+        self._action_onehot: List[np.ndarray] = []
+        for rows in self._action_rows:
+            mat = np.zeros((max(len(rows), 1), self._D), dtype=np.float32)
+            for i, cmd_idx in enumerate(rows):
+                mat[i, cmd_idx] = 1.0
+            self._action_onehot.append(mat)
+
     def _parse_action(self, action_str: str) -> List[int]:
         if action_str == NOP:
             return []
@@ -56,15 +64,14 @@ class ActionEncoder:
         return rows
 
     def encode(self, action_indices: List[int]) -> torch.Tensor:
-        rows: List[torch.Tensor] = []
-        for idx in action_indices:
-            for cmd_idx in self._action_rows[idx]:
-                v = torch.zeros(self._D, dtype=torch.float32)
-                v[cmd_idx] = 1.0
-                rows.append(v)
-        if not rows:
+        parts = [
+            self._action_onehot[i]
+            for i in action_indices
+            if self._action_rows[i]
+        ]
+        if not parts:
             return torch.zeros(1, self._D, dtype=torch.float32)
-        return torch.stack(rows, dim=0)
+        return torch.from_numpy(np.concatenate(parts, axis=0))
 
 
 class ReliabilityChecker:
