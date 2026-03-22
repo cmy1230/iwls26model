@@ -102,6 +102,9 @@ MACRO_ACTIONS = [
     "fraig; dc2; dch;",
 ]
 
+# 仅纯 dch 原子触发「后接禁止类」约束（精确匹配，不含宏串）
+_DCH_ATOMS = frozenset({"dch", "dch -x", "dch -f", "dch -x -f"})
+
 ACTIONS = ATOMIC_ACTIONS + MACRO_ACTIONS + [NOP]
 
 
@@ -1437,6 +1440,23 @@ class BOiLSOptimizer:
         )
         self._fmask_mac = np.array([a in MACRO_ACTIONS for a in _acts], dtype=np.bool_)
 
+        self._fmask_is_dch = np.array(
+            [a in _DCH_ATOMS for a in _acts], dtype=np.bool_
+        )
+        _forbidden_atoms = {
+            a for a in _acts
+            if (
+                "rewrite" in a
+                or "resub" in a
+                or "refactor" in a
+                or "&dsdb" in a
+            )
+            and a not in MACRO_ACTIONS
+        }
+        self._fmask_forbidden_after_dch = np.array(
+            [a in _forbidden_atoms for a in _acts], dtype=np.bool_
+        )
+
         # ---- 模块C: CC-SSK / RBF 嵌入核（高 R² 时用代理嵌入 RBF）----
         _cw = circuit_weight if enable_cc_ssk else 0.0
         self._use_rbf = False
@@ -1527,9 +1547,41 @@ class BOiLSOptimizer:
             return canonicalize_seq(seq, self.nop_idx)
         return list(seq)
 
+    def _rng_action_after(self, prev_idx):
+        """在「上一槽为纯 dch 原子」时禁止选 rewrite/resub/refactor/&dsdb 等纯原子；宏不在禁止表内。"""
+        if prev_idx is None:
+            return int(self.rng.integers(0, self.n_actions))
+        if not self._fmask_is_dch[int(prev_idx)]:
+            return int(self.rng.integers(0, self.n_actions))
+        ok = ~self._fmask_forbidden_after_dch
+        allowed = np.flatnonzero(ok)
+        if allowed.size == 0:
+            return int(self.rng.integers(0, self.n_actions))
+        return int(self.rng.choice(allowed))
+
+    def _repair_after_dch_pairs(self, seq: list) -> list:
+        """修正相邻 (纯 dch → 禁止原子) 违例（用于 TR/交叉/热启动等非逐格采样路径）。"""
+        s = list(seq)
+        for i in range(1, len(s)):
+            for _ in range(64):
+                pi, ci = int(s[i - 1]), int(s[i])
+                if not (self._fmask_is_dch[pi] and self._fmask_forbidden_after_dch[ci]):
+                    break
+                ok = ~self._fmask_forbidden_after_dch
+                allowed = np.flatnonzero(ok)
+                if allowed.size == 0:
+                    break
+                s[i] = int(self.rng.choice(allowed))
+        return s
+
     def _rand_seq(self):
         eff_len = int(self.rng.integers(self.min_eff_len, self.max_eff_len + 1))
-        return list(self.rng.integers(0, self.n_actions, size=eff_len))
+        if eff_len <= 0:
+            return []
+        out = [self._rng_action_after(None)]
+        for _ in range(1, eff_len):
+            out.append(self._rng_action_after(out[-1]))
+        return out
 
     def _normalize(self):
         ya = np.array(self.y_neg_cost)
@@ -1569,20 +1621,21 @@ class BOiLSOptimizer:
                 seq = [mi] * eff_len
                 seeds.append(seq)
 
-            # 类型2：宏前缀 + 随机后缀
+            # 类型2：宏前缀 + 随机后缀（后缀遵守 dch→禁止原子 邻接约束）
             for k in range(n_hybrid):
                 mi = macro_indices[k % len(macro_indices)]
                 eff_len = int(self.rng.integers(self.min_eff_len, self.max_eff_len + 1))
-                seq = [mi] + list(
-                    self.rng.integers(0, self.n_actions,
-                                      size=max(0, eff_len - 1)))
+                seq = [mi]
+                for _ in range(max(0, eff_len - 1)):
+                    seq.append(self._rng_action_after(seq[-1]))
                 seeds.append(seq)
 
         # 类型3 / 兜底：纯随机补足
         while len(seeds) < n:
             seeds.append(self._rand_seq())
 
-        return seeds[:n]
+        out = [self._repair_after_dch_pairs(list(s)) for s in seeds[:n]]
+        return out
 
     # ----------------------------------------------------------------
     #  模块D: 精英池管理 + 进化候选生成
@@ -1635,15 +1688,24 @@ class BOiLSOptimizer:
             target_len = int(self.rng.integers(self.min_eff_len, self.max_eff_len + 1))
             child = child[:target_len]
             while len(child) < target_len:
-                child.append(int(self.rng.integers(0, self.n_actions)))
+                child.append(self._rng_action_after(child[-1] if child else None))
 
             # 随机变异 1~3 个位置
             n_mut = int(self.rng.integers(1, 4))
             for _ in range(n_mut):
                 pos = int(self.rng.integers(0, len(child)))
-                child[pos] = int(self.rng.integers(0, self.n_actions))
+                lo = child[pos - 1] if pos > 0 else None
+                hi = child[pos + 1] if pos + 1 < len(child) else None
+                for _try in range(32):
+                    a = self._rng_action_after(lo)
+                    if hi is None or not (
+                            self._fmask_is_dch[a] and self._fmask_forbidden_after_dch[hi]):
+                        child[pos] = a
+                        break
+                else:
+                    child[pos] = self._rng_action_after(lo)
 
-            cands.append(child)
+            cands.append(self._repair_after_dch_pairs(child))
 
         return cands
 
@@ -1707,6 +1769,7 @@ class BOiLSOptimizer:
             init_seqs = init_seqs[:self.n_init]
         while len(init_seqs) < self.n_init:
             init_seqs.append(self._rand_seq())
+        init_seqs = [self._repair_after_dch_pairs(list(s)) for s in init_seqs]
 
         for seq in init_seqs:
             if timeout > 0 and time.time() - t0 > timeout:
@@ -1800,7 +1863,7 @@ class BOiLSOptimizer:
                         # 先更新有效长度上界，再 restart，使 radius = 新上界
                         self.tr.restart()
                         self.tr.radius = self.max_eff_len
-                        seq = new_center   # new_center 不为 None（at_max时不扩展）
+                        seq = self._repair_after_dch_pairs(new_center)
                     else:
                         self.tr.restart()
                         if self.rng.random() < 0.3:
@@ -1843,7 +1906,10 @@ class BOiLSOptimizer:
             if self.best_x is None:
                 self.best_x = self._rand_seq()
             # 不再按 surrogate 扩展候选池
-            tr_cands = self.tr.sample(self.best_x, self.n_cand, self.rng)
+            tr_cands = [
+                self._repair_after_dch_pairs(s)
+                for s in self.tr.sample(self.best_x, self.n_cand, self.rng)
+            ]
             evo_cands = self._evo_candidates(self.n_cand * 2)
             rand_cands = [self._rand_seq() for _ in range(self.n_cand)]
             all_cands = tr_cands + evo_cands + rand_cands
