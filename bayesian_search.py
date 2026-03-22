@@ -830,12 +830,12 @@ class GaussianProcessSSK:
             return self.neg_log_ml()
 
         for _ in range(n_restarts):
-            x0 = [rng.uniform(0.60, 0.98), rng.uniform(0.1, 0.95),
+            x0 = [rng.uniform(0.60, 0.95), rng.uniform(0.1, 0.95),
                    rng.uniform(0.5, 2.0)]
             try:
                 r = scipy_minimize(
                     obj, x0,
-                    bounds=[(0.60, 0.98), (0.05, 0.95), (0.05, 5.0)],
+                    bounds=[(0.60, 0.95), (0.05, 0.95), (0.05, 5.0)],
                     method="L-BFGS-B",
                     options={"maxiter": max_iter, "ftol": 1e-3},
                 )
@@ -1185,8 +1185,8 @@ class BOiLSOptimizer:
                  batch_k=2, elite_size=15,
                  enable_cc_ssk=True, circuit_weight=0.3,
                  enable_seeded_init=True,
-                 surrogate=None, surrogate_skip_delta=0.10,
-                 surrogate_skip_delta_min=0.05,
+                 surrogate=None, surrogate_skip_delta=0.08,
+                 surrogate_skip_delta_min=0.06,
                  ts_prob=0.5, diversity_thresh=0.8,
                  kernel_noise_var=1e-2):
         self.evaluator = evaluator
@@ -1555,7 +1555,7 @@ class BOiLSOptimizer:
             # 相似度去重（不影响精英池和 best_y，只跳过 GP 数据加入）
             _add_to_gp = True
             if len(self.X) > 0:
-                _max_sim = max(self.kernel.normalized(seq, x) for x in self.X[-30:])
+                _max_sim = max(self.kernel.normalized(seq, x) for x in self.X[-100:])
                 if _max_sim > 0.95:
                     _add_to_gp = False
             if _add_to_gp:
@@ -1584,6 +1584,30 @@ class BOiLSOptimizer:
             )
 
         print(f"[CircuitSyn] 初始化完成, best_cost={-self.best_y:.6f}")
+
+        # ---- GP 伪观测热启动（仅当代理可用时）----
+        if self.surrogate and self.surrogate.enabled:
+            _n_pseudo = 300
+            _pseudo_seqs = [self._rand_seq() for _ in range(_n_pseudo)]
+            _pseudo_preds = self.surrogate.predict_batch(_pseudo_seqs)  # (N, 2)
+            _pseudo_costs = np.array([self._surr_to_cost(p) for p in _pseudo_preds])
+            _pseudo_nc = -_pseudo_costs                               # neg_cost
+            ya_real, ym, ys = self._normalize()
+            yn_real = (ya_real - ym) / ys
+            _pseudo_yn = (_pseudo_nc - ym) / ys
+            _yn_aug = np.concatenate([yn_real, _pseudo_yn])
+            _orig_noise = self.kernel.signal_var
+            _cc_save = self.kernel._circuit_feats
+            self.kernel._circuit_feats = None
+            self.kernel.set_params(self.kernel.theta_m, self.kernel.theta_g,
+                                   signal_var=_orig_noise * 3.0)
+            _X_aug = list(self.X) + _pseudo_seqs
+            self.gp.fit(_X_aug, _yn_aug)
+            self.kernel.set_params(self.kernel.theta_m, self.kernel.theta_g,
+                                   signal_var=_orig_noise)
+            self.kernel._circuit_feats = _cc_save
+
+            print(f"[Surrogate] GP 伪观测热启动：注入 {_n_pseudo} 个虚拟数据点")
 
         if self.surrogate and self.surrogate.enabled:
             print(f"[Surrogate] 代理模型已启用，剪枝比={self.surrogate.safe_cut_ratio*100:.0f}%，"
@@ -1617,8 +1641,10 @@ class BOiLSOptimizer:
             # ---- 周期性超参数优化 ----
             # bo_step 按评估次数计（t 从 n_init 起计 BO 轮次）
             bo_step = t - self.n_init
+            _min_data_for_hp = self.n_init + 10   # 至少积累 n_init+10 个真实点再做 HP 优化
             if (self.hp_interval > 0
-                    and t >= self.n_init + 10):
+                    and bo_step > 0
+                    and len(self.X) >= _min_data_for_hp):
                 _adaptive_interval = (self.hp_interval
                                       if self.tr.radius > self.max_eff_len // 2
                                       else max(self.hp_interval // 2, 5))
@@ -1834,7 +1860,7 @@ class BOiLSOptimizer:
                 # 相似度去重（不影响精英池和 best_y，只跳过 GP 数据加入）
                 _add_to_gp = True
                 if len(self.X) > 0:
-                    _max_sim = max(self.kernel.normalized(pick_list, x) for x in self.X[-30:])
+                    _max_sim = max(self.kernel.normalized(pick_list, x) for x in self.X[-100:])
                     if _max_sim > 0.95:
                         _add_to_gp = False
                 if _add_to_gp:
@@ -2042,7 +2068,7 @@ def parse_args():
     parser.add_argument("--kernel_noise_var", type=float, default=1e-2,
                         help="SSK 核对角观测噪声方差 noise_var (default: 1e-2)")
     parser.add_argument("--hp_interval", type=int, default=20,
-                        help="GP 超参优化基准间隔；评估计数 t < n_init+10 时不触发，"
+                        help="GP 超参优化基准间隔；前 n_init+10 个真实点之前不触发，"
                              "TR 半径较小时间隔减半（下限 5），0=禁用 (default: 20)")
     parser.add_argument("--seed", type=int, default=42,
                         help="随机种子 (default: 42)")
@@ -2095,10 +2121,10 @@ def parse_args():
                         help="AAG 文件目录，自动拼接 <circuit_name>.aag（--surrogate_aag 优先）")
     parser.add_argument("--surrogate_csv", type=str, default="",
                         help="代理模型可靠性 CSV 路径（可选，空=跳过可靠性检查）")
-    parser.add_argument("--surrogate_skip_delta", type=float, default=0.10,
+    parser.add_argument("--surrogate_skip_delta", type=float, default=0.08,
                         help="skip_delta 初始（最大）值，随搜索线性衰减到 surrogate_skip_delta_min (default: 0.10)")
-    parser.add_argument("--surrogate_skip_delta_min", type=float, default=0.05,
-                        help="skip_delta 终止（最小）值 (default: 0.05)")
+    parser.add_argument("--surrogate_skip_delta_min", type=float, default=0.06,
+                        help="skip_delta 终止（最小）值 (default: 0.06)")
 
     return parser.parse_args()
 
