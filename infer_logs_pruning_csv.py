@@ -2,7 +2,7 @@
 扫描 log 目录下的 *.log，解析电路名；对每电路加载对应 ckpt（iwls26_<circuit>.pt），
 在 test 集（与 train.py 相同的 within_circuit 划分）上做 CPU 推理；
 用 area×delay 作为标量指标：按「预测乘积最大」的一侧做切分比例（50/75/80%），
-与「真值乘积最小」的 10%、5% 集合求交集个数，写入 CSV。
+与「真值乘积最小」的 10%、5% 集合的误伤率写入 CSV：交集占该真值最小集合大小的百分比（0–100，与 train.py 中 mis_hit_rate 一致）。
 
 依赖：与 train.py / infer_per_circuit.py 相同的数据路径与划分逻辑。
 """
@@ -186,15 +186,16 @@ def run(args: argparse.Namespace) -> None:
                 st = pruning_overlap_top_pred_largest_vs_true_smallest(
                     prod_pred, prod_true, cp / 100.0, tq / 100.0
                 )
-                metrics.append(int(st["overlap"]))
+                # 占「真值最小 q%」集合大小的比例 → 百分比（误伤率）
+                metrics.append(round(float(st["mis_hit_rate"]) * 100.0, 6))
 
         rows.append(row_head + ["ok", n_test] + metrics)
-        print(f"[OK] {circuit} n_test={n_test} overlaps={metrics}")
+        print(f"[OK] {circuit} n_test={n_test} pct_of_truemin_subset={metrics}")
 
     headers = ["circuit", "log_path", "status", "n_test"]
     for cp in cut_pcts:
         for tq in true_pcts:
-            headers.append(f"intersect_predmax{cp}pct_truemin{tq}pct")
+            headers.append(f"hit_pct_of_truemin{tq}_subset_predmax{cp}")
 
     with open(args.output_csv, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)

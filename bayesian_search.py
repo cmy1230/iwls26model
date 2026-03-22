@@ -1182,7 +1182,9 @@ class BOiLSOptimizer:
                  enable_ple=False, init_seq_len=0,
                  batch_k=2, elite_size=15,
                  enable_cc_ssk=True, circuit_weight=0.3,
-                 enable_seeded_init=True):
+                 enable_seeded_init=True,
+                 surrogate=None,
+                 surrogate_expand=10):
         self.evaluator = evaluator
         self.n_actions = n_actions
         self.n_init = max(n_init, 5)
@@ -1235,6 +1237,10 @@ class BOiLSOptimizer:
         self.y_neg_cost = []
         self.best_x = None
         self.best_y = -float("inf")
+
+        # ---- 模块G: 模型代理加速 ----
+        self.surrogate = surrogate
+        self.surrogate_expand = max(1, surrogate_expand)
 
     def _compute_seq_feat(self, seq: list) -> np.ndarray:
         """从序列索引提取结构特征，无需执行ABC，可用于任意候选序列。
@@ -1424,12 +1430,20 @@ class BOiLSOptimizer:
         # Phase 1: 初始化采样
         # ================================================================
         label = "宏序列热启动" if self.enable_seeded_init else "随机初始化"
+        if self.surrogate and self.surrogate.enabled:
+            print(f"[Surrogate] 模型预筛启用，候选扩大{self.surrogate_expand}x，"
+                  f"剪枝{self.surrogate.safe_cut_ratio*100:.0f}%")
         print(f"[CircuitSyn] {label} ({self.n_init} 样本, "
               f"初始有效长度上界={self.max_eff_len}) ...")
 
-        init_seqs = (self._seeded_init_sequences(self.n_init)
+        n_init_pool = self.n_init * self.surrogate_expand if (
+            self.surrogate and self.surrogate.enabled) else self.n_init
+        init_seqs = (self._seeded_init_sequences(n_init_pool)
                      if self.enable_seeded_init
-                     else [self._rand_seq() for _ in range(self.n_init)])
+                     else [self._rand_seq() for _ in range(n_init_pool)])
+        if self.surrogate and self.surrogate.enabled:
+            init_seqs = self.surrogate.filter_candidates(init_seqs)
+            init_seqs = init_seqs[:self.n_init]   # 保证ABC评估次数不变
 
         for seq in init_seqs:
             if timeout > 0 and time.time() - t0 > timeout:
@@ -1545,10 +1559,13 @@ class BOiLSOptimizer:
             # ---- EGBO: 生成候选（TR随机 + 进化候选）----
             if self.best_x is None:
                 self.best_x = self._rand_seq()
-            tr_cands = self.tr.sample(self.best_x, self.n_cand, self.rng)
-            evo_cands = self._evo_candidates(self.n_cand * 2)
-            rand_cands = [self._rand_seq() for _ in range(self.n_cand)]
+            _exp = self.surrogate_expand if (self.surrogate and self.surrogate.enabled) else 1
+            tr_cands = self.tr.sample(self.best_x, self.n_cand * _exp, self.rng)
+            evo_cands = self._evo_candidates(self.n_cand * 2 * _exp)
+            rand_cands = [self._rand_seq() for _ in range(self.n_cand * _exp)]
             all_cands = tr_cands + evo_cands + rand_cands
+            if self.surrogate and self.surrogate.enabled:
+                all_cands = self.surrogate.filter_candidates(all_cands)
 
             # ---- GP 对全部候选打 EI 分（纯推断，无 ABC 调用）----
             all_feats = [self._compute_seq_feat(c) for c in all_cands]
@@ -1819,6 +1836,16 @@ def parse_args():
     parser.add_argument("--verbose", action="store_true",
                         help="显示详细搜索日志")
 
+    # ---- 模块G: 模型代理加速 ----
+    parser.add_argument("--surrogate_ckpt_dir", type=str, default="",
+                        help="per-circuit ckpt目录（含iwls26_<circuit>.pt），空=禁用模型加速")
+    parser.add_argument("--surrogate_csv", type=str, default="",
+                        help="pruning_product_intersections.csv路径，用于判断安全剪枝比")
+    parser.add_argument("--surrogate_device", type=str, default="cpu",
+                        help="模型推断设备 (default: cpu)")
+    parser.add_argument("--surrogate_expand", type=int, default=10,
+                        help="候选池扩大倍数 (default: 10)")
+
     return parser.parse_args()
 
 
@@ -1848,6 +1875,20 @@ def main():
         multifidelity=args.multifidelity,
     )
 
+    # ---- 模块G: 模型代理 ----
+    surrogate = None
+    if args.surrogate_ckpt_dir:
+        from model_surrogate import ModelSurrogate
+        circuit_name = Path(args.input_file).stem
+        surrogate = ModelSurrogate(
+            circuit_name=circuit_name,
+            aag_path=args.input_file,
+            ckpt_dir=args.surrogate_ckpt_dir,
+            actions=actions,
+            csv_path=(args.surrogate_csv or ""),
+            device=args.surrogate_device,
+        )
+
     optimizer = BOiLSOptimizer(
         evaluator=evaluator,
         seq_len=args.seq_len,
@@ -1864,6 +1905,8 @@ def main():
         enable_cc_ssk=not args.no_cc_ssk,
         circuit_weight=args.circuit_weight,
         enable_seeded_init=not args.no_seeded_init,
+        surrogate=surrogate,
+        surrogate_expand=args.surrogate_expand,
     )
 
     print(f"\n{'='*60}")
@@ -1874,6 +1917,7 @@ def main():
           f"CC-SSK={'开启 (w='+str(args.circuit_weight)+')' if not args.no_cc_ssk else '关闭'}  "
           f"EGBO={'开启 (K='+str(args.batch_k)+')' if args.batch_k > 1 else '关闭(K=1)'}  "
           f"多保真度={'开启' if args.multifidelity else '关闭'}")
+    print(f"  模型加速={'开启 cut='+str(int(surrogate.safe_cut_ratio*100))+'%' if surrogate and surrogate.enabled else '关闭'}")
     print(f"  加速后端={_SSK_BACKEND}"
           + (" (pip install numba 可获得 ~50-100x 加速)"
              if _SSK_BACKEND == "python" else ""))
