@@ -1,20 +1,48 @@
-#!/usr/bin/env bash
-# 在下面数组里写上要训练的电路名（子串匹配，与 train.py --circuit 一致）
-# 运行: chmod +x train_circuits.sh && ./train_circuits.sh
-# 日志: ./log/<电路名>.log
-
-set -uo pipefail
-
-# ---------- 你改这里 ----------
-PYTHON="${PYTHON:-python3}"
-TRAIN="${TRAIN:-train.py}"          # 与脚本同目录下的 train.py
 LOG_DIR="${LOG_DIR:-./log}"
-TRAIN_EXTRA=""                      # 需要时写上，例如: TRAIN_EXTRA="--max_epochs 500"
 
 CIRCUITS=(
+  "ac97_ctrl"
+  "aes"
+  "aes_secworks"
+  "aes_xcrypt"
+  "des3_area"
+  "dft"
+  "dynamic_node"
+  "ethernet"
+  "fir"
+  "fpu"
+  "idft"
+  "iir"
+  "jpeg"
+  "pci"
+  "sasc"
+  "sha256"
+  "simple_spi"
+  "spi"
+  "ss_pcm"
+  "tv80"
+  "usb_phy"
+  "vga_lcd"
+  "wb_conmax"
+  "wb_dma"
+  "bgm"
+  "blob_merge"
+  "boundtop"
+  "LU32PEEng"
+  "LU64PEEng"
+  "LU8PEEng"
+  "mcml"
+  "mkDelayWorker32B"
+  "mkPktMerge"
+  "mkSMAdapter4B"
   "or1200"
-  # "aes"
-  # "ibex"
+  "raygentop"
+  "sha"
+  "spree"
+  "stereovision0"
+  "stereovision1"
+  "stereovision2"
+  "stereovision3"
 )
 # ----------------------------
 
@@ -36,7 +64,7 @@ for c in "${CIRCUITS[@]}"; do
   echo "======== $(date -u +"%Y-%m-%dT%H:%M:%SZ")  ${c} -> ${log} ========" | tee -a "${log}"
 
   # shellcheck disable=SC2086
-  "${PYTHON}" "${TRAIN}" --circuit "${c}" ${TRAIN_EXTRA} >>"${log}" 2>&1
+  python train.py --circuit "${c}"  >>"${log}" 2>&1
   ec=$?
 
   if [[ "${ec}" -eq 0 ]]; then

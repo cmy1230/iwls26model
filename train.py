@@ -682,7 +682,7 @@ class TrainCfg:
     grad_clip: float = 1.0
 
     # early stopping: val 上 area 与 delay 的 R² 均值（电路内多任务平均后再电路间平均，见 selection_r2_mean_tasks_from_metrics）
-    patience: int = 10
+    patience: int = 20
     r2_min_delta: float = 1e-6  # improvement threshold
 
     # label normalization
