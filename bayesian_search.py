@@ -99,7 +99,7 @@ MACRO_ACTIONS = [
     "drf; drw; drwsat; balance",
     # ifraig + dc2
     "ifraig; dc2; balance; dc2 -l; balance",
-    "fraig; dc2; dch;",
+    "fraig; dc2; dch",
 ]
 
 # 仅纯 dch 原子触发「后接禁止类」约束（精确匹配，不含宏串）
@@ -1440,8 +1440,12 @@ class BOiLSOptimizer:
         )
         self._fmask_mac = np.array([a in MACRO_ACTIONS for a in _acts], dtype=np.bool_)
 
+        def _ends_with_dch(a: str) -> bool:
+            last = a.rstrip("; \t").rsplit(";", 1)[-1].strip()
+            return last in _DCH_ATOMS
+
         self._fmask_is_dch = np.array(
-            [a in _DCH_ATOMS for a in _acts], dtype=np.bool_
+            [_ends_with_dch(a) for a in _acts], dtype=np.bool_
         )
         _forbidden_atoms = {
             a for a in _acts
@@ -1547,6 +1551,13 @@ class BOiLSOptimizer:
             return canonicalize_seq(seq, self.nop_idx)
         return list(seq)
 
+    def _last_eff_idx(self, seq: list) -> "int | None":
+        """返回 seq 中最后一个非 NOP 动作的 index；全为 NOP 或空时返回 None。"""
+        for idx in reversed(seq):
+            if self.nop_idx is None or int(idx) != self.nop_idx:
+                return int(idx)
+        return None
+
     def _rng_action_after(self, prev_idx):
         """在「上一槽为纯 dch 原子」时禁止选 rewrite/resub/refactor/&dsdb 等纯原子；宏不在禁止表内。"""
         if prev_idx is None:
@@ -1560,11 +1571,14 @@ class BOiLSOptimizer:
         return int(self.rng.choice(allowed))
 
     def _repair_after_dch_pairs(self, seq: list) -> list:
-        """修正相邻 (纯 dch → 禁止原子) 违例（用于 TR/交叉/热启动等非逐格采样路径）。"""
+        """修正 (有效前驱为 dch 末尾 → 禁止原子) 违例；跳过中间 NOP。"""
         s = list(seq)
         for i in range(1, len(s)):
+            pi = self._last_eff_idx(s[:i])
+            if pi is None:
+                continue
             for _ in range(64):
-                pi, ci = int(s[i - 1]), int(s[i])
+                ci = int(s[i])
                 if not (self._fmask_is_dch[pi] and self._fmask_forbidden_after_dch[ci]):
                     break
                 ok = ~self._fmask_forbidden_after_dch
@@ -1580,7 +1594,7 @@ class BOiLSOptimizer:
             return []
         out = [self._rng_action_after(None)]
         for _ in range(1, eff_len):
-            out.append(self._rng_action_after(out[-1]))
+            out.append(self._rng_action_after(self._last_eff_idx(out)))
         return out
 
     def _normalize(self):
@@ -1627,7 +1641,7 @@ class BOiLSOptimizer:
                 eff_len = int(self.rng.integers(self.min_eff_len, self.max_eff_len + 1))
                 seq = [mi]
                 for _ in range(max(0, eff_len - 1)):
-                    seq.append(self._rng_action_after(seq[-1]))
+                    seq.append(self._rng_action_after(self._last_eff_idx(seq)))
                 seeds.append(seq)
 
         # 类型3 / 兜底：纯随机补足
@@ -1688,7 +1702,7 @@ class BOiLSOptimizer:
             target_len = int(self.rng.integers(self.min_eff_len, self.max_eff_len + 1))
             child = child[:target_len]
             while len(child) < target_len:
-                child.append(self._rng_action_after(child[-1] if child else None))
+                child.append(self._rng_action_after(self._last_eff_idx(child)))
 
             # 随机变异 1~3 个位置
             n_mut = int(self.rng.integers(1, 4))
