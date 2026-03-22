@@ -102,9 +102,6 @@ MACRO_ACTIONS = [
     "fraig; dc2; dch",
 ]
 
-# 仅纯 dch 原子触发「后接禁止类」约束（精确匹配，不含宏串）
-_DCH_ATOMS = frozenset({"dch", "dch -x", "dch -f", "dch -x -f"})
-
 ACTIONS = ATOMIC_ACTIONS + MACRO_ACTIONS + [NOP]
 
 
@@ -1440,27 +1437,6 @@ class BOiLSOptimizer:
         )
         self._fmask_mac = np.array([a in MACRO_ACTIONS for a in _acts], dtype=np.bool_)
 
-        def _ends_with_dch(a: str) -> bool:
-            last = a.rstrip("; \t").rsplit(";", 1)[-1].strip()
-            return last in _DCH_ATOMS
-
-        self._fmask_is_dch = np.array(
-            [_ends_with_dch(a) for a in _acts], dtype=np.bool_
-        )
-        _forbidden_atoms = {
-            a for a in _acts
-            if (
-                "rewrite" in a
-                or "resub" in a
-                or "refactor" in a
-                or "&dsdb" in a
-            )
-            and a not in MACRO_ACTIONS
-        }
-        self._fmask_forbidden_after_dch = np.array(
-            [a in _forbidden_atoms for a in _acts], dtype=np.bool_
-        )
-
         # ---- 模块C: CC-SSK / RBF 嵌入核（高 R² 时用代理嵌入 RBF）----
         _cw = circuit_weight if enable_cc_ssk else 0.0
         self._use_rbf = False
@@ -1551,51 +1527,40 @@ class BOiLSOptimizer:
             return canonicalize_seq(seq, self.nop_idx)
         return list(seq)
 
-    def _last_eff_idx(self, seq: list) -> "int | None":
-        """返回 seq 中最后一个非 NOP 动作的 index；全为 NOP 或空时返回 None。"""
-        for idx in reversed(seq):
-            if self.nop_idx is None or int(idx) != self.nop_idx:
-                return int(idx)
-        return None
+    def _is_valid_seq(self, seq: list) -> bool:
+        """去掉 NOP 后，逐对检查 dch → rewrite/resub/refactor/&dsdb 违例。"""
+        acts = self.evaluator.actions
+        eff = [int(a) for a in seq
+               if self.nop_idx is None or int(a) != self.nop_idx]
+        for i in range(1, len(eff)):
+            p = acts[eff[i - 1]]
+            c = acts[eff[i]]
+            if "dch" in p and (
+                "rewrite" in c or "resub" in c
+                or "refactor" in c or "&dsdb" in c
+            ):
+                return False
+        return True
 
     def _rng_action_after(self, prev_idx):
-        """在「上一槽为纯 dch 原子」时禁止选 rewrite/resub/refactor/&dsdb 等纯原子；宏不在禁止表内。"""
-        if prev_idx is None:
-            return int(self.rng.integers(0, self.n_actions))
-        if not self._fmask_is_dch[int(prev_idx)]:
-            return int(self.rng.integers(0, self.n_actions))
-        ok = ~self._fmask_forbidden_after_dch
-        allowed = np.flatnonzero(ok)
-        if allowed.size == 0:
-            return int(self.rng.integers(0, self.n_actions))
-        return int(self.rng.choice(allowed))
+        """均匀随机动作（dch 邻接合法性由 _rand_seq 拒绝采样与 _repair_after_dch_pairs 保障）。"""
+        return int(self.rng.integers(0, self.n_actions))
 
     def _repair_after_dch_pairs(self, seq: list) -> list:
-        """修正 (有效前驱为 dch 末尾 → 禁止原子) 违例；跳过中间 NOP。"""
-        s = list(seq)
-        for i in range(1, len(s)):
-            pi = self._last_eff_idx(s[:i])
-            if pi is None:
-                continue
-            for _ in range(64):
-                ci = int(s[i])
-                if not (self._fmask_is_dch[pi] and self._fmask_forbidden_after_dch[ci]):
-                    break
-                ok = ~self._fmask_forbidden_after_dch
-                allowed = np.flatnonzero(ok)
-                if allowed.size == 0:
-                    break
-                s[i] = int(self.rng.choice(allowed))
-        return s
+        """验证序列合法性，不合法则换随机合法序列。"""
+        if self._is_valid_seq(seq):
+            return list(seq)
+        return self._rand_seq()
 
     def _rand_seq(self):
-        eff_len = int(self.rng.integers(self.min_eff_len, self.max_eff_len + 1))
-        if eff_len <= 0:
-            return []
-        out = [self._rng_action_after(None)]
-        for _ in range(1, eff_len):
-            out.append(self._rng_action_after(self._last_eff_idx(out)))
-        return out
+        for _ in range(200):
+            eff_len = int(self.rng.integers(self.min_eff_len, self.max_eff_len + 1))
+            if eff_len <= 0:
+                return []
+            seq = list(self.rng.integers(0, self.n_actions, size=eff_len))
+            if self._is_valid_seq(seq):
+                return seq
+        return seq  # 兜底（极罕见）
 
     def _normalize(self):
         ya = np.array(self.y_neg_cost)
@@ -1635,13 +1600,13 @@ class BOiLSOptimizer:
                 seq = [mi] * eff_len
                 seeds.append(seq)
 
-            # 类型2：宏前缀 + 随机后缀（后缀遵守 dch→禁止原子 邻接约束）
+            # 类型2：宏前缀 + 随机后缀（末尾 _repair_after_dch_pairs 保证合法）
             for k in range(n_hybrid):
                 mi = macro_indices[k % len(macro_indices)]
                 eff_len = int(self.rng.integers(self.min_eff_len, self.max_eff_len + 1))
                 seq = [mi]
                 for _ in range(max(0, eff_len - 1)):
-                    seq.append(self._rng_action_after(self._last_eff_idx(seq)))
+                    seq.append(self._rng_action_after(None))
                 seeds.append(seq)
 
         # 类型3 / 兜底：纯随机补足
@@ -1660,7 +1625,7 @@ class BOiLSOptimizer:
             sims = [self.kernel.normalized(seq, e[1]) for e in self.elite_pool]
             max_sim = max(sims)
             most_similar_idx = int(np.argmax(sims))
-            if max_sim >= 0.85:
+            if max_sim >= 0.8:
                 if cost < self.elite_pool[most_similar_idx][0]:
                     self.elite_pool[most_similar_idx] = (cost, list(seq))
                     self.elite_pool.sort(key=lambda x: x[0])
@@ -1702,22 +1667,13 @@ class BOiLSOptimizer:
             target_len = int(self.rng.integers(self.min_eff_len, self.max_eff_len + 1))
             child = child[:target_len]
             while len(child) < target_len:
-                child.append(self._rng_action_after(self._last_eff_idx(child)))
+                child.append(self._rng_action_after(None))
 
-            # 随机变异 1~3 个位置
+            # 随机变异 1~3 个位置（违例由 _repair_after_dch_pairs 回退为合法随机序列）
             n_mut = int(self.rng.integers(1, 4))
             for _ in range(n_mut):
                 pos = int(self.rng.integers(0, len(child)))
-                lo = child[pos - 1] if pos > 0 else None
-                hi = child[pos + 1] if pos + 1 < len(child) else None
-                for _try in range(32):
-                    a = self._rng_action_after(lo)
-                    if hi is None or not (
-                            self._fmask_is_dch[a] and self._fmask_forbidden_after_dch[hi]):
-                        child[pos] = a
-                        break
-                else:
-                    child[pos] = self._rng_action_after(lo)
+                child[pos] = self._rng_action_after(None)
 
             cands.append(self._repair_after_dch_pairs(child))
 
@@ -1774,7 +1730,7 @@ class BOiLSOptimizer:
                         if dist > 1e-12:
                             pd.append(dist)
                 mean_dist = float(np.mean(pd)) if pd else 10.0
-            ls = max(mean_dist * 0.5, 1e-10)
+            ls = max(mean_dist * 2, 1e-10)
             self.kernel.length_scale = ls
             self.kernel._sync_theta_for_hp_key()
             print(f"[RBF] 嵌入距离 均值={mean_dist:.2f}，length_scale={ls:.2f}")
