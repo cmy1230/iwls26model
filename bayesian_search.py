@@ -954,15 +954,31 @@ class GaussianProcessSSK:
         print("  [GP] 特征值修正强制正定")
 
     def predict(self, X_new, X_new_feats=None):
-        mu  = np.zeros(len(X_new))
-        var = np.zeros(len(X_new))
+        M = len(X_new)
+        n = len(self.X)
+
+        # 批量构造核向量矩阵 KV: shape (n, M)
+        KV = np.zeros((n, M), dtype=np.float64)
         for i, x in enumerate(X_new):
-            kv = self.kernel.kernel_vector(self.X, x)
-            x_feat = X_new_feats[i] if X_new_feats is not None else None
-            kv = self.kernel.apply_cc_ssk_vector(kv, x_feat=x_feat)
-            mu[i]  = kv @ self.alpha
-            v      = cho_solve((self.L_cho, self._lo), kv)
-            var[i] = max(self.kernel.signal_var - kv @ v, 1e-10)
+            KV[:, i] = self.kernel.kernel_vector(self.X, x)
+
+        # 批量应用 CC 权重（向量化）
+        if (self.kernel.circuit_weight > 0.0
+                and self.kernel._circuit_feats is not None
+                and len(self.kernel._circuit_feats) == n
+                and X_new_feats is not None):
+            feats = np.asarray(self.kernel._circuit_feats, dtype=np.float64)  # (n, d)
+            xf    = np.asarray(X_new_feats, dtype=np.float64)                 # (M, d)
+            diff  = feats[np.newaxis, :, :] - xf[:, np.newaxis, :]            # (M, n, d)
+            dist2 = np.sum(diff ** 2, axis=-1)                                 # (M, n)
+            C     = np.exp(-dist2 / (2.0 * self.kernel.circuit_sigma ** 2))   # (M, n)
+            W     = (1.0 - self.kernel.circuit_weight) + self.kernel.circuit_weight * C
+            KV    = KV * W.T                                                   # (n, M)
+
+        # 一次 cho_solve 完成所有 M 个候选
+        mu  = KV.T @ self.alpha
+        V   = cho_solve((self.L_cho, self._lo), KV)
+        var = np.maximum(self.kernel.signal_var - np.sum(KV * V, axis=0), 1e-10)
         return mu, var
 
     def neg_log_ml(self):
@@ -1407,6 +1423,17 @@ class BOiLSOptimizer:
 
         self.rng = np.random.default_rng(seed)
 
+        _acts = self.evaluator.actions
+        self._fmask_rw = np.array(
+            ['rewrite' in a or 'refactor' in a for a in _acts], dtype=np.bool_
+        )
+        self._fmask_rs = np.array(['resub' in a for a in _acts], dtype=np.bool_)
+        self._fmask_bal = np.array(
+            ['balance' in a or 'dc2' in a or 'dch' in a for a in _acts],
+            dtype=np.bool_,
+        )
+        self._fmask_mac = np.array([a in MACRO_ACTIONS for a in _acts], dtype=np.bool_)
+
         # ---- 模块C: CC-SSK / RBF 嵌入核（高 R² 时用代理嵌入 RBF）----
         _cw = circuit_weight if enable_cc_ssk else 0.0
         self._use_rbf = False
@@ -1476,34 +1503,22 @@ class BOiLSOptimizer:
                    pw_rewrite, pw_resub, pw_balance, pw_macro, len_norm]
         前4维: 均匀统计；后4维: 线性位置加权（前段权重高）
         """
-        acts = self.evaluator.actions
         n = len(seq)
         if n == 0:
             return np.zeros(9, dtype=np.float64)
-
-        f_rewrite = sum(1 for i in seq if 'rewrite' in acts[i] or 'refactor' in acts[i]) / n
-        f_resub = sum(1 for i in seq if 'resub' in acts[i]) / n
-        f_balance = sum(1 for i in seq if 'balance' in acts[i] or 'dc2' in acts[i]
-                         or 'dch' in acts[i]) / n
-        f_macro = sum(1 for i in seq if acts[i] in MACRO_ACTIONS) / n
-
-        weights = [(n - p) / n for p in range(n)]
-        w_sum = sum(weights)
-        pw_rewrite = sum(weights[p] for p, i in enumerate(seq)
-                         if 'rewrite' in acts[i] or 'refactor' in acts[i]) / w_sum
-        pw_resub = sum(weights[p] for p, i in enumerate(seq)
-                       if 'resub' in acts[i]) / w_sum
-        pw_balance = sum(weights[p] for p, i in enumerate(seq)
-                         if 'balance' in acts[i] or 'dc2' in acts[i]
-                         or 'dch' in acts[i]) / w_sum
-        pw_macro = sum(weights[p] for p, i in enumerate(seq)
-                      if acts[i] in MACRO_ACTIONS) / w_sum
-
-        f_len = n / max(self.max_eff_len, 1)
-
-        return np.array([f_rewrite, f_resub, f_balance, f_macro,
-                         pw_rewrite, pw_resub, pw_balance, pw_macro,
-                         f_len], dtype=np.float64)
+        arr = np.asarray(seq, dtype=np.intp)
+        rw = self._fmask_rw[arr].astype(np.float64)
+        rs = self._fmask_rs[arr].astype(np.float64)
+        bal = self._fmask_bal[arr].astype(np.float64)
+        mac = self._fmask_mac[arr].astype(np.float64)
+        w = np.arange(n, 0, -1, dtype=np.float64) / n
+        ws = w.sum()
+        return np.array([
+            rw.mean(), rs.mean(), bal.mean(), mac.mean(),
+            (rw * w).sum() / ws, (rs * w).sum() / ws,
+            (bal * w).sum() / ws, (mac * w).sum() / ws,
+            n / max(self.max_eff_len, 1),
+        ], dtype=np.float64)
 
     def _canonicalize(self, seq):
         if self.nop_idx is not None:
