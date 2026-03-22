@@ -741,8 +741,8 @@ class SSKKernel:
 def rbf_length_scale_from_embeddings(embs: np.ndarray) -> float:
     """由嵌入两两距离平方的中位数定标 RBF length_scale（启动诊断）。
 
-    取 median(||zi−zj||²)，令 length_scale = sqrt(median / 2)，
-    使典型对的 exp(−d²/(2ℓ²)) 约为 e^(−1) 量级；结果夹在 [0.5, 500]。
+    取 median(||zi−zj||²)，令 length_scale = sqrt(median × 2)，
+    使典型对的 exp(−d²/(2ℓ²)) 约为 e^(−0.25) 量级；结果夹在 [0.5, 500]。
     """
     embs = np.asarray(embs, dtype=np.float64)
     n = embs.shape[0]
@@ -754,7 +754,7 @@ def rbf_length_scale_from_embeddings(embs: np.ndarray) -> float:
     med = float(np.median(dist2[iu]))
     if (not math.isfinite(med)) or med <= 0:
         return 10.0
-    ls = math.sqrt(med / 2.0)
+    ls = math.sqrt(med * 2.0)
     return float(np.clip(ls, 0.5, 500.0))
 
 
@@ -1411,8 +1411,7 @@ class BOiLSOptimizer:
                  batch_k=2, elite_size=15,
                  enable_cc_ssk=True, circuit_weight=0.3,
                  enable_seeded_init=True,
-                 surrogate=None,
-                 surrogate_expand=10):
+                 surrogate=None):
         self.evaluator = evaluator
         self.n_actions = n_actions
         self.n_init = max(n_init, 5)
@@ -1491,7 +1490,6 @@ class BOiLSOptimizer:
 
         # ---- 模块G: 模型代理加速 ----
         self.surrogate = surrogate
-        self.surrogate_expand = max(1, surrogate_expand)
 
         self._pseudo_seqs: list = []
         self._pseudo_nc_raw: list = []
@@ -1549,10 +1547,10 @@ class BOiLSOptimizer:
         用 `a in MACRO_ACTIONS` 精确识别宏动作，避免误判含分号的原子动作
         （如 "&get -n; &dsdb; &put"）。
 
-        各占 1/3 策略：
-          1/3 - 宏重复：宏动作索引重复填满 seq_len 槽
-          1/3 - 宏前缀：宏动作 + 随机后缀
-          1/3 - 纯随机：保持探索性
+        各占比策略：
+          1/4 - 宏重复：宏动作索引重复填满 seq_len 槽
+          1/4 - 宏前缀：宏动作 + 随机后缀
+          1/2 - 纯随机：保持探索性
         """
         macro_indices = [
             i for i, a in enumerate(self.evaluator.actions)
@@ -1560,8 +1558,8 @@ class BOiLSOptimizer:
         ]
 
         seeds = []
-        n_repeat = n // 3
-        n_hybrid = n // 3
+        n_repeat = n // 4
+        n_hybrid = n // 4
 
         if macro_indices:
             # 类型1：宏重复（循环复用宏索引列表）
@@ -1776,7 +1774,6 @@ class BOiLSOptimizer:
                     and bo_step % self.hp_interval == 0):
                 self.gp.optimize_hp(n_restarts=2, max_iter=5)
                 print(f"  [HP] θ_m={self.kernel.theta_m:.3f}  "
-                      f"θ_g={self.kernel.theta_g:.3f}  "
                       f"σ²={self.kernel.signal_var:.3f}  "
                       f"TR_ρ={self.tr.radius}  max_eff_len={self.max_eff_len}")
                 # HP 变化后重新归一化并拟合
@@ -2027,7 +2024,6 @@ def save_results(evaluator: SynthesisEvaluator, optimizer: BOiLSOptimizer,
             "optimize": evaluator.optimize,
             "ssk_order": optimizer.kernel.order,
             "final_theta_m": optimizer.kernel.theta_m,
-            "final_theta_g": optimizer.kernel.theta_g,
             "tr_restarts": optimizer.tr.restarts,
             "enable_ple": optimizer.enable_ple,
             "enable_cc_ssk": optimizer.kernel.circuit_weight > 0,
@@ -2060,7 +2056,7 @@ def save_results(evaluator: SynthesisEvaluator, optimizer: BOiLSOptimizer,
         print(f"最优统计:    nodes={best.get('nodes', 'N/A')}  levels={best.get('levels', 'N/A')}")
         print(f"nodes 改善:  {results['improvement']['nodes']}")
         print(f"levels 改善: {results['improvement']['levels']}")
-    print(f"SSK 超参数:  θ_m={optimizer.kernel.theta_m:.3f}  θ_g={optimizer.kernel.theta_g:.3f}")
+    print(f"核超参数:    θ_m={optimizer.kernel.theta_m:.3f}  σ²={optimizer.kernel.signal_var:.3f}")
     print(f"TR 重启:     {optimizer.tr.restarts} 次")
     print(f"\n最优序列:")
     print(f"  {seq_str}")
@@ -2190,8 +2186,6 @@ def parse_args():
                         help="pruning_product_intersections.csv路径，用于判断安全剪枝比")
     parser.add_argument("--surrogate_device", type=str, default="cpu",
                         help="模型推断设备 (default: cpu)")
-    parser.add_argument("--surrogate_expand", type=int, default=10,
-                        help="候选池扩大倍数 (default: 10)")
 
     return parser.parse_args()
 
@@ -2256,7 +2250,6 @@ def main():
         circuit_weight=args.circuit_weight,
         enable_seeded_init=not args.no_seeded_init,
         surrogate=surrogate,
-        surrogate_expand=args.surrogate_expand,
     )
 
     print(f"\n{'='*60}")
