@@ -519,7 +519,7 @@ class SSKKernel:
     通过 lengths 数组实现变长序列的高效批量计算。
     """
 
-    def __init__(self, subseq_order=2, theta_m=0.8, theta_g=0.8,
+    def __init__(self, subseq_order=2, theta_m=0.8, theta_g=0.3,
                  signal_var=1.0, noise_var=1e-4, nop_idx=None,
                  circuit_weight=0.3, circuit_sigma=0.5):
         self.order       = subseq_order
@@ -738,6 +738,138 @@ class SSKKernel:
         return kv * w
 
 
+def rbf_length_scale_from_embeddings(embs: np.ndarray) -> float:
+    """由嵌入两两距离平方的中位数定标 RBF length_scale（启动诊断）。
+
+    取 median(||zi−zj||²)，令 length_scale = sqrt(median / 2)，
+    使典型对的 exp(−d²/(2ℓ²)) 约为 e^(−1) 量级；结果夹在 [0.5, 500]。
+    """
+    embs = np.asarray(embs, dtype=np.float64)
+    n = embs.shape[0]
+    if n < 2:
+        return 10.0
+    diff = embs[:, np.newaxis, :] - embs[np.newaxis, :, :]
+    dist2 = np.sum(diff * diff, axis=-1)
+    iu = np.triu_indices(n, k=1)
+    med = float(np.median(dist2[iu]))
+    if (not math.isfinite(med)) or med <= 0:
+        return 10.0
+    ls = math.sqrt(med / 2.0)
+    return float(np.clip(ls, 0.5, 500.0))
+
+
+class RBFEmbedKernel:
+    """基于 ModelSurrogate 序列嵌入的 RBF 核；与 SSKKernel 相同的 GP / CC-SSK 调用面。"""
+
+    def __init__(self, surrogate, signal_var=1.0, noise_var=1e-4,
+                 length_scale=None, init_seqs=None,
+                 circuit_weight=0.0, circuit_sigma=0.5):
+        self.surrogate = surrogate
+        self.signal_var = float(signal_var)
+        self.noise_var = float(noise_var)
+        if length_scale is not None:
+            self.length_scale = max(float(length_scale), 1e-12)
+        elif init_seqs is not None and len(init_seqs) >= 2:
+            _em0 = surrogate.embed_sequences(init_seqs)
+            self.length_scale = rbf_length_scale_from_embeddings(_em0)
+        else:
+            self.length_scale = 10.0
+        self._train_embs = None
+        self._circuit_feats = None
+        self.circuit_weight = float(np.clip(circuit_weight, 0.0, 1.0))
+        self.circuit_sigma = max(float(circuit_sigma), 1e-6)
+        # 与 GaussianProcessSSK._hp_key 一致：用 theta_m 携带 length_scale，theta_g 占位
+        self.theta_m = float(self.length_scale)
+        self.theta_g = 0.0
+
+    def _sync_theta_for_hp_key(self):
+        self.theta_m = float(self.length_scale)
+        self.theta_g = 0.0
+
+    def normalized(self, s, t):
+        es = self.surrogate.embed_sequences([s])[0]
+        et = self.surrogate.embed_sequences([t])[0]
+        d2 = float(np.sum((np.asarray(es, dtype=np.float64)
+                          - np.asarray(et, dtype=np.float64)) ** 2))
+        ls2 = 2.0 * self.length_scale ** 2
+        if ls2 <= 0:
+            return 0.0
+        return float(math.exp(-d2 / ls2))
+
+    def __call__(self, s, t, noise=False):
+        v = self.signal_var * self.normalized(s, t)
+        if noise and tuple(s) == tuple(t):
+            v += self.noise_var
+        return v
+
+    def gram_matrix(self, seqs):
+        embs = np.asarray(
+            self.surrogate.embed_sequences(seqs), dtype=np.float64)
+        self._train_embs = embs
+        n = embs.shape[0]
+        if n == 0:
+            return np.zeros((0, 0), dtype=np.float64)
+        diff = embs[:, np.newaxis, :] - embs[np.newaxis, :, :]
+        dist2 = np.sum(diff * diff, axis=-1)
+        ls2 = 2.0 * self.length_scale ** 2
+        K = self.signal_var * np.exp(-dist2 / ls2)
+        np.fill_diagonal(K, self.signal_var + self.noise_var)
+        return K
+
+    def kernel_vector(self, seqs, x):
+        if self._train_embs is None:
+            raise RuntimeError("RBFEmbedKernel.kernel_vector: 请先调用 gram_matrix")
+        x_emb = np.asarray(
+            self.surrogate.embed_sequences([x])[0], dtype=np.float64).reshape(1, -1)
+        diff = self._train_embs - x_emb
+        dist2 = np.sum(diff * diff, axis=1)
+        ls2 = 2.0 * self.length_scale ** 2
+        return self.signal_var * np.exp(-dist2 / ls2)
+
+    def set_params(self, signal_var, length_scale):
+        self.signal_var = max(float(signal_var), 1e-12)
+        self.length_scale = max(float(length_scale), 1e-12)
+        self._sync_theta_for_hp_key()
+
+    def clear_cache(self):
+        self._train_embs = None
+
+    def _extend_jit_cache(self, new_seq):
+        if self._train_embs is None:
+            return
+        new_e = np.asarray(
+            self.surrogate.embed_sequences([new_seq]), dtype=np.float64)
+        self._train_embs = np.vstack([self._train_embs, new_e])
+
+    def apply_cc_ssk(self, K: np.ndarray) -> np.ndarray:
+        n = K.shape[0]
+        if (self.circuit_weight == 0.0
+                or self._circuit_feats is None
+                or len(self._circuit_feats) != n):
+            return K
+        feats = np.asarray(self._circuit_feats, dtype=np.float64)
+        diff = feats[:, np.newaxis, :] - feats[np.newaxis, :, :]
+        dist2 = np.sum(diff ** 2, axis=-1)
+        C = np.exp(-dist2 / (2.0 * self.circuit_sigma ** 2))
+        W = (1.0 - self.circuit_weight) + self.circuit_weight * C
+        return K * W
+
+    def apply_cc_ssk_vector(self, kv: np.ndarray, x_feat=None) -> np.ndarray:
+        n = len(kv)
+        if (self.circuit_weight == 0.0
+                or self._circuit_feats is None
+                or len(self._circuit_feats) != n):
+            return kv
+        feats = np.asarray(self._circuit_feats, dtype=np.float64)
+        if x_feat is None:
+            x_feat = feats.mean(axis=0)
+        diff = feats - np.asarray(x_feat, dtype=np.float64)[np.newaxis, :]
+        dist2 = np.sum(diff ** 2, axis=-1)
+        c = np.exp(-dist2 / (2.0 * self.circuit_sigma ** 2))
+        w = (1.0 - self.circuit_weight) + self.circuit_weight * c
+        return kv * w
+
+
 # ============================================================================
 #  Gaussian Process (SSK 核)
 #
@@ -822,30 +954,15 @@ class GaussianProcessSSK:
         print("  [GP] 特征值修正强制正定")
 
     def predict(self, X_new, X_new_feats=None):
-        M = len(X_new)
-        n = len(self.X)
-        # 1. 批量计算核向量矩阵 KV: shape (n, M)
-        KV = np.zeros((n, M), dtype=np.float64)
+        mu  = np.zeros(len(X_new))
+        var = np.zeros(len(X_new))
         for i, x in enumerate(X_new):
-            KV[:, i] = self.kernel.kernel_vector(self.X, x)
-
-        # 2. 批量应用 CC-SSK 权重 (向量化，替代逐候选 apply_cc_ssk_vector)
-        if (self.kernel.circuit_weight > 0.0
-                and self.kernel._circuit_feats is not None
-                and len(self.kernel._circuit_feats) == n
-                and X_new_feats is not None):
-            feats = np.asarray(self.kernel._circuit_feats, dtype=np.float64)  # (n, d)
-            xf    = np.asarray(X_new_feats, dtype=np.float64)                 # (M, d)
-            diff  = feats[np.newaxis, :, :] - xf[:, np.newaxis, :]            # (M, n, d)
-            dist2 = np.sum(diff ** 2, axis=-1)                                 # (M, n)
-            C     = np.exp(-dist2 / (2.0 * self.kernel.circuit_sigma ** 2))   # (M, n)
-            W     = (1.0 - self.kernel.circuit_weight) + self.kernel.circuit_weight * C
-            KV    = KV * W.T                                                   # (n, M)
-
-        # 3. 一次 cho_solve 完成全部 M 个候选
-        mu  = KV.T @ self.alpha                                    # (M,)
-        V   = cho_solve((self.L_cho, self._lo), KV)                # (n, M)
-        var = np.maximum(self.kernel.signal_var - np.sum(KV * V, axis=0), 1e-10)  # (M,)
+            kv = self.kernel.kernel_vector(self.X, x)
+            x_feat = X_new_feats[i] if X_new_feats is not None else None
+            kv = self.kernel.apply_cc_ssk_vector(kv, x_feat=x_feat)
+            mu[i]  = kv @ self.alpha
+            v      = cho_solve((self.L_cho, self._lo), kv)
+            var[i] = max(self.kernel.signal_var - kv @ v, 1e-10)
         return mu, var
 
     def neg_log_ml(self):
@@ -854,11 +971,53 @@ class GaussianProcessSSK:
         return 0.5 * (log_det + float(self.y @ self.alpha) + n * np.log(2 * np.pi))
 
     def optimize_hp(self, n_restarts=2, max_iter=5):
-        """通过边际似然优化核超参数 (θ_m, θ_g, σ²_f)"""
-        best_nlml = self.neg_log_ml()
-        best_p = (self.kernel.theta_m, self.kernel.theta_g, self.kernel.signal_var)
+        """通过边际似然优化核超参数（SSK: θ_m, θ_g, σ²_f；RBF 嵌入核: σ²_f, length_scale）"""
         X_save = [list(x) for x in self.X]
         y_save = self.y.copy()
+
+        if isinstance(self.kernel, RBFEmbedKernel):
+            best_nlml = self.neg_log_ml()
+            best_sv = float(self.kernel.signal_var)
+            best_ls = float(self.kernel.length_scale)
+            rng = np.random.default_rng()
+            rbf_max_iter = 10
+
+            def obj_rbf(p):
+                self.kernel.set_params(float(p[0]), float(p[1]))
+                self.fit(X_save, y_save)
+                return self.neg_log_ml()
+
+            x0_list = [np.array([1.0, float(self.kernel.length_scale)], dtype=float)]
+            for _ in range(max(0, n_restarts - 1)):
+                x0_list.append(
+                    np.array(
+                        [rng.uniform(0.05, 5.0), rng.uniform(0.5, 500.0)],
+                        dtype=float,
+                    )
+                )
+
+            for x0 in x0_list:
+                try:
+                    r = scipy_minimize(
+                        obj_rbf,
+                        x0,
+                        bounds=[(0.05, 5.0), (0.5, 500.0)],
+                        method="L-BFGS-B",
+                        options={"maxiter": rbf_max_iter, "ftol": 1e-3},
+                    )
+                    if r.fun < best_nlml:
+                        best_nlml = r.fun
+                        best_sv = float(r.x[0])
+                        best_ls = float(r.x[1])
+                except Exception:
+                    pass
+
+            self.kernel.set_params(best_sv, best_ls)
+            self.fit(X_save, y_save)
+            return
+
+        best_nlml = self.neg_log_ml()
+        best_p = (self.kernel.theta_m, self.kernel.theta_g, self.kernel.signal_var)
 
         rng = np.random.default_rng()
 
@@ -1219,6 +1378,10 @@ class SynthesisEvaluator:
 #         c. 评估 QoR(seq_{t+1}), 更新 D, 更新 ρ
 # ============================================================================
 
+R2_THRESHOLD = 0.70
+PSEUDO_THRESHOLD = 0.70
+
+
 class BOiLSOptimizer:
 
     def __init__(self, evaluator: SynthesisEvaluator, seq_len: int,
@@ -1244,20 +1407,23 @@ class BOiLSOptimizer:
 
         self.rng = np.random.default_rng(seed)
 
-        _acts = self.evaluator.actions
-        self._fmask_rw = np.array(
-            ['rewrite' in a or 'refactor' in a for a in _acts], dtype=np.bool_)
-        self._fmask_rs = np.array(['resub' in a for a in _acts], dtype=np.bool_)
-        self._fmask_bal = np.array(
-            ['balance' in a or 'dc2' in a or 'dch' in a for a in _acts],
-            dtype=np.bool_)
-        self._fmask_mac = np.array([a in MACRO_ACTIONS for a in _acts], dtype=np.bool_)
-
-        # ---- 模块C: CC-SSK 核 ----
+        # ---- 模块C: CC-SSK / RBF 嵌入核（高 R² 时用代理嵌入 RBF）----
         _cw = circuit_weight if enable_cc_ssk else 0.0
-        self.kernel = SSKKernel(subseq_order=ssk_order,
-                                nop_idx=self.nop_idx,
-                                circuit_weight=_cw)
+        self._use_rbf = False
+        if (surrogate is not None and getattr(surrogate, "enabled", False)
+                and float(getattr(surrogate, "r2_combined", 0.0)) >= R2_THRESHOLD):
+            r2 = float(surrogate.r2_combined)
+            self.kernel = RBFEmbedKernel(
+                surrogate, signal_var=1.0, noise_var=1e-4,
+                length_scale=None, init_seqs=None,
+                circuit_weight=_cw)
+            self._use_rbf = True
+            print(f"[GP] 使用RBF嵌入核 (r2={r2:.2f})")
+        else:
+            self.kernel = SSKKernel(subseq_order=ssk_order,
+                                    nop_idx=self.nop_idx,
+                                    circuit_weight=_cw)
+            print("[GP] 使用SSK核")
         self.gp = GaussianProcessSSK(self.kernel)
 
         # ---- 模块B: PLE 渐进长度扩展（默认关闭）----
@@ -1296,28 +1462,48 @@ class BOiLSOptimizer:
         self.surrogate = surrogate
         self.surrogate_expand = max(1, surrogate_expand)
 
+        self._pseudo_seqs: list = []
+        self._pseudo_nc_raw: list = []
+        self._use_pseudo = (
+            surrogate is not None
+            and getattr(surrogate, "enabled", False)
+            and float(getattr(surrogate, "r2_combined", 0.0)) >= PSEUDO_THRESHOLD
+        )
+
     def _compute_seq_feat(self, seq: list) -> np.ndarray:
         """从序列索引提取结构特征，无需执行ABC，可用于任意候选序列。
         特征(9维): [frac_rewrite, frac_resub, frac_balance, frac_macro,
                    pw_rewrite, pw_resub, pw_balance, pw_macro, len_norm]
         前4维: 均匀统计；后4维: 线性位置加权（前段权重高）
         """
+        acts = self.evaluator.actions
         n = len(seq)
         if n == 0:
             return np.zeros(9, dtype=np.float64)
-        arr = np.asarray(seq, dtype=np.intp)
-        rw  = self._fmask_rw[arr].astype(np.float64)
-        rs  = self._fmask_rs[arr].astype(np.float64)
-        bal = self._fmask_bal[arr].astype(np.float64)
-        mac = self._fmask_mac[arr].astype(np.float64)
-        w   = np.arange(n, 0, -1, dtype=np.float64) / n   # [1, (n-1)/n, ..., 1/n]
-        ws  = w.sum()
-        return np.array([
-            rw.mean(), rs.mean(), bal.mean(), mac.mean(),
-            (rw * w).sum() / ws, (rs * w).sum() / ws,
-            (bal * w).sum() / ws, (mac * w).sum() / ws,
-            n / max(self.max_eff_len, 1),
-        ], dtype=np.float64)
+
+        f_rewrite = sum(1 for i in seq if 'rewrite' in acts[i] or 'refactor' in acts[i]) / n
+        f_resub = sum(1 for i in seq if 'resub' in acts[i]) / n
+        f_balance = sum(1 for i in seq if 'balance' in acts[i] or 'dc2' in acts[i]
+                         or 'dch' in acts[i]) / n
+        f_macro = sum(1 for i in seq if acts[i] in MACRO_ACTIONS) / n
+
+        weights = [(n - p) / n for p in range(n)]
+        w_sum = sum(weights)
+        pw_rewrite = sum(weights[p] for p, i in enumerate(seq)
+                         if 'rewrite' in acts[i] or 'refactor' in acts[i]) / w_sum
+        pw_resub = sum(weights[p] for p, i in enumerate(seq)
+                       if 'resub' in acts[i]) / w_sum
+        pw_balance = sum(weights[p] for p, i in enumerate(seq)
+                         if 'balance' in acts[i] or 'dc2' in acts[i]
+                         or 'dch' in acts[i]) / w_sum
+        pw_macro = sum(weights[p] for p, i in enumerate(seq)
+                      if acts[i] in MACRO_ACTIONS) / w_sum
+
+        f_len = n / max(self.max_eff_len, 1)
+
+        return np.array([f_rewrite, f_resub, f_balance, f_macro,
+                         pw_rewrite, pw_resub, pw_balance, pw_macro,
+                         f_len], dtype=np.float64)
 
     def _canonicalize(self, seq):
         if self.nop_idx is not None:
@@ -1472,20 +1658,38 @@ class BOiLSOptimizer:
         # Phase 1: 初始化采样
         # ================================================================
         label = "宏序列热启动" if self.enable_seeded_init else "随机初始化"
-        if self.surrogate and self.surrogate.enabled:
-            print(f"[Surrogate] 模型预筛启用，候选扩大{self.surrogate_expand}x，"
-                  f"剪枝{self.surrogate.safe_cut_ratio*100:.0f}%")
+        if self.surrogate and self.surrogate.enabled and not self._use_pseudo:
+            print(f"[Surrogate] 模型预筛启用，剪枝{self.surrogate.safe_cut_ratio*100:.0f}%")
         print(f"[CircuitSyn] {label} ({self.n_init} 样本, "
               f"初始有效长度上界={self.max_eff_len}) ...")
 
-        n_init_pool = self.n_init * self.surrogate_expand if (
-            self.surrogate and self.surrogate.enabled) else self.n_init
+        n_init_pool = self.n_init
         init_seqs = (self._seeded_init_sequences(n_init_pool)
                      if self.enable_seeded_init
                      else [self._rand_seq() for _ in range(n_init_pool)])
-        if self.surrogate and self.surrogate.enabled:
+        if self._use_rbf and self.surrogate is not None:
+            sample_n = min(20, len(init_seqs))
+            sample = init_seqs[:sample_n]
+            embs = np.asarray(self.surrogate.embed_sequences(sample), dtype=np.float64)
+            if embs.shape[0] < 2:
+                mean_dist = 10.0
+            else:
+                pd = []
+                for i in range(embs.shape[0]):
+                    for j in range(i + 1, embs.shape[0]):
+                        dist = float(np.linalg.norm(embs[i] - embs[j]))
+                        if dist > 1e-12:
+                            pd.append(dist)
+                mean_dist = float(np.mean(pd)) if pd else 10.0
+            ls = max(mean_dist * 0.5, 1e-10)
+            self.kernel.length_scale = ls
+            self.kernel._sync_theta_for_hp_key()
+            print(f"[RBF] 嵌入距离 均值={mean_dist:.2f}，length_scale={ls:.2f}")
+        if self.surrogate and self.surrogate.enabled and not self._use_pseudo:
             init_seqs = self.surrogate.filter_candidates(init_seqs)
-            init_seqs = init_seqs[:self.n_init]   # 保证ABC评估次数不变
+            init_seqs = init_seqs[:self.n_init]
+        while len(init_seqs) < self.n_init:
+            init_seqs.append(self._rand_seq())
 
         for seq in init_seqs:
             if timeout > 0 and time.time() - t0 > timeout:
@@ -1522,14 +1726,28 @@ class BOiLSOptimizer:
             ya, ym, ys = self._normalize()
             yn = (ya - ym) / ys
 
-            # ---- 注入 CC-SSK 序列结构特征（模块C）----
+            # ---- 注入 CC-SSK 序列结构特征（模块C）；含伪观测时拼接特征 ----
             if self.kernel.circuit_weight > 0 and len(self._seq_feats) == len(self.X):
-                self.kernel._circuit_feats = np.array(self._seq_feats, dtype=np.float64)
+                _cf = np.array(self._seq_feats, dtype=np.float64)
+                if self._use_pseudo and self._pseudo_seqs:
+                    _pf = np.array(
+                        [self._compute_seq_feat(s) for s in self._pseudo_seqs],
+                        dtype=np.float64)
+                    self.kernel._circuit_feats = np.vstack([_cf, _pf])
+                else:
+                    self.kernel._circuit_feats = _cf
             else:
                 self.kernel._circuit_feats = None
 
-            # ---- 拟合 GP ----
-            self.gp.fit(self.X, yn)
+            # ---- 拟合 GP（可选：拼接代理伪观测）----
+            if self._use_pseudo and self._pseudo_seqs:
+                pseudo_nc = np.asarray(self._pseudo_nc_raw, dtype=float)
+                pseudo_yn = (pseudo_nc - ym) / ys
+                X_fit = self.X + self._pseudo_seqs
+                yn_fit = np.concatenate([yn, pseudo_yn])
+            else:
+                X_fit, yn_fit = self.X, yn
+            self.gp.fit(X_fit, yn_fit)
 
             # ---- 周期性超参数优化 ----
             # bo_step 按评估次数计（t 从 n_init 起计 BO 轮次）
@@ -1545,7 +1763,14 @@ class BOiLSOptimizer:
                 # HP 变化后重新归一化并拟合
                 ya, ym, ys = self._normalize()
                 yn = (ya - ym) / ys
-                self.gp.fit(self.X, yn)
+                if self._use_pseudo and self._pseudo_seqs:
+                    pseudo_nc = np.asarray(self._pseudo_nc_raw, dtype=float)
+                    pseudo_yn = (pseudo_nc - ym) / ys
+                    X_fit = self.X + self._pseudo_seqs
+                    yn_fit = np.concatenate([yn, pseudo_yn])
+                else:
+                    X_fit, yn_fit = self.X, yn
+                self.gp.fit(X_fit, yn_fit)
 
             # ---- TR 收敛处理（含 PLE 扩展）----
             if self.tr.dead:
@@ -1601,22 +1826,46 @@ class BOiLSOptimizer:
             # ---- EGBO: 生成候选（TR随机 + 进化候选）----
             if self.best_x is None:
                 self.best_x = self._rand_seq()
-            _exp = self.surrogate_expand if (self.surrogate and self.surrogate.enabled) else 1
-            tr_cands = self.tr.sample(self.best_x, self.n_cand * _exp, self.rng)
-            evo_cands = self._evo_candidates(self.n_cand * 2 * _exp)
-            rand_cands = [self._rand_seq() for _ in range(self.n_cand * _exp)]
+            # 不再按 surrogate 扩展候选池
+            tr_cands = self.tr.sample(self.best_x, self.n_cand, self.rng)
+            evo_cands = self._evo_candidates(self.n_cand * 2)
+            rand_cands = [self._rand_seq() for _ in range(self.n_cand)]
             all_cands = tr_cands + evo_cands + rand_cands
             rand_start = len(tr_cands) + len(evo_cands)
             filtered_orig_indices = None
-            if self.surrogate and self.surrogate.enabled:
+            if self._use_pseudo and self.surrogate and self.surrogate.enabled:
+                preds_all = self.surrogate.predict_batch(all_cands)
+                products_all = preds_all[:, 0] * preds_all[:, 1]
+                sorted_idx = np.argsort(products_all)
+                n_pos, n_neg = 20, 10
+                ntot = len(all_cands)
+                if ntot > n_pos + n_neg:
+                    pos_idx = sorted_idx[:n_pos]
+                    neg_idx = sorted_idx[-n_neg:]
+                    pseudo_idx = np.concatenate([pos_idx, neg_idx])
+                    st0 = self.evaluator.init_stats
+                    if (self.evaluator.mapping
+                            and st0.get("area", 0) > 0
+                            and st0.get("delay", 0) > 0):
+                        init_a = max(float(st0["area"]), 1e-10)
+                        init_d = max(float(st0["delay"]), 1e-10)
+                    else:
+                        init_a = max(float(st0.get("nodes", 1)), 1e-10)
+                        init_d = max(float(st0.get("levels", 1)), 1e-10)
+                    pseudo_products = products_all[pseudo_idx] / (init_a * init_d)
+                    self._pseudo_seqs = [all_cands[i] for i in pseudo_idx]
+                    self._pseudo_nc_raw = list(-pseudo_products)
+                    middle_idx = sorted_idx[n_pos:-n_neg]
+                    all_cands = [all_cands[i] for i in middle_idx]
+                    filtered_orig_indices = np.asarray(middle_idx, dtype=np.int64)
+                else:
+                    all_cands, filtered_orig_indices = self.surrogate.filter_candidates(
+                        all_cands, return_orig_indices=True
+                    )
+            elif self.surrogate and self.surrogate.enabled:
                 all_cands, filtered_orig_indices = self.surrogate.filter_candidates(
                     all_cands, return_orig_indices=True
                 )
-                # 保持候选数与无 surrogate 时一致，避免 GP/feat 计算量膨胀
-                orig_size = self.n_cand * 4  # tr + evo×2 + rand = 4×n_cand
-                all_cands = all_cands[:orig_size]
-                if filtered_orig_indices is not None:
-                    filtered_orig_indices = filtered_orig_indices[:orig_size]
 
             # ---- GP 退化检测（层次3）----
             _gp_degraded = (
