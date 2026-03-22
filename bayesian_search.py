@@ -1407,8 +1407,7 @@ class BOiLSOptimizer:
                  batch_k=2, elite_size=15,
                  enable_cc_ssk=True, circuit_weight=0.3,
                  enable_seeded_init=True,
-                 surrogate=None,
-                 surrogate_expand=10):
+                 surrogate=None):
         self.evaluator = evaluator
         self.n_actions = n_actions
         self.n_init = max(n_init, 5)
@@ -1487,7 +1486,6 @@ class BOiLSOptimizer:
 
         # ---- 模块G: 模型代理加速 ----
         self.surrogate = surrogate
-        self.surrogate_expand = max(1, surrogate_expand)
 
         self._pseudo_seqs: list = []
         self._pseudo_nc_raw: list = []
@@ -1771,10 +1769,15 @@ class BOiLSOptimizer:
                     and bo_step > 0
                     and bo_step % self.hp_interval == 0):
                 self.gp.optimize_hp(n_restarts=2, max_iter=5)
-                print(f"  [HP] θ_m={self.kernel.theta_m:.3f}  "
-                      f"θ_g={self.kernel.theta_g:.3f}  "
-                      f"σ²={self.kernel.signal_var:.3f}  "
-                      f"TR_ρ={self.tr.radius}  max_eff_len={self.max_eff_len}")
+                if self._use_rbf:
+                    print(f"  [HP] length_scale={self.kernel.length_scale:.3f}  "
+                          f"σ²={self.kernel.signal_var:.3f}  "
+                          f"TR_ρ={self.tr.radius}  max_eff_len={self.max_eff_len}")
+                else:
+                    print(f"  [HP] θ_m={self.kernel.theta_m:.3f}  "
+                          f"θ_g={self.kernel.theta_g:.3f}  "
+                          f"σ²={self.kernel.signal_var:.3f}  "
+                          f"TR_ρ={self.tr.radius}  max_eff_len={self.max_eff_len}")
                 # HP 变化后重新归一化并拟合
                 ya, ym, ys = self._normalize()
                 yn = (ya - ym) / ys
@@ -1888,9 +1891,19 @@ class BOiLSOptimizer:
                 and len(self.X) >= self.n_init + 10
             )
             top_k = min(self.batch_k, len(all_cands))
+            # RBF 嵌入核已由 surrogate 驱动 GP，退化时用 surrogate 再排序意义不大
+            _use_surrogate_degraded = (
+                _gp_degraded and self.surrogate and self.surrogate.enabled
+                and not self._use_rbf
+            )
+            if _gp_degraded and self._use_rbf:
+                print(
+                    f"  [GP] jitter={self.gp.last_jitter:.0e} 偏高，"
+                    f"RBF 嵌入核下仍用 EI 选候选"
+                )
 
-            if _gp_degraded and self.surrogate and self.surrogate.enabled:
-                # surrogate 接管：直接按预测 area×delay 升序选 top-K
+            if _use_surrogate_degraded:
+                # SSK 路径：surrogate 按预测 area×delay 升序选 top-K
                 print(
                     f"  [Surrogate] GP退化(jitter={self.gp.last_jitter:.0e})，"
                     f"模型接管候选选择"
@@ -2062,7 +2075,12 @@ def save_results(evaluator: SynthesisEvaluator, optimizer: BOiLSOptimizer,
         print(f"最优统计:    nodes={best.get('nodes', 'N/A')}  levels={best.get('levels', 'N/A')}")
         print(f"nodes 改善:  {results['improvement']['nodes']}")
         print(f"levels 改善: {results['improvement']['levels']}")
-    print(f"SSK 超参数:  θ_m={optimizer.kernel.theta_m:.3f}  θ_g={optimizer.kernel.theta_g:.3f}")
+    if optimizer._use_rbf:
+        print(f"GP 超参数 (RBF):  length_scale={optimizer.kernel.length_scale:.3f}  "
+              f"σ²={optimizer.kernel.signal_var:.3f}")
+    else:
+        print(f"SSK 超参数:  θ_m={optimizer.kernel.theta_m:.3f}  "
+              f"θ_g={optimizer.kernel.theta_g:.3f}")
     print(f"TR 重启:     {optimizer.tr.restarts} 次")
     print(f"\n最优序列:")
     print(f"  {seq_str}")
@@ -2192,8 +2210,6 @@ def parse_args():
                         help="pruning_product_intersections.csv路径，用于判断安全剪枝比")
     parser.add_argument("--surrogate_device", type=str, default="cpu",
                         help="模型推断设备 (default: cpu)")
-    parser.add_argument("--surrogate_expand", type=int, default=10,
-                        help="候选池扩大倍数 (default: 10)")
 
     return parser.parse_args()
 
@@ -2258,7 +2274,6 @@ def main():
         circuit_weight=args.circuit_weight,
         enable_seeded_init=not args.no_seeded_init,
         surrogate=surrogate,
-        surrogate_expand=args.surrogate_expand,
     )
 
     print(f"\n{'='*60}")
