@@ -99,10 +99,17 @@ MACRO_ACTIONS = [
     "drf; drw; drwsat; balance",
     # ifraig + dc2
     "ifraig; dc2; balance; dc2 -l; balance",
-    "fraig; dc2; dch;",
+    "fraig; dc2; dch",
 ]
 
 ACTIONS = ATOMIC_ACTIONS + MACRO_ACTIONS + [NOP]
+
+try:
+    from model_surrogate import ModelSurrogate
+    _SURROGATE_AVAILABLE = True
+except ImportError:
+    ModelSurrogate = None
+    _SURROGATE_AVAILABLE = False
 
 
 def canonicalize_seq(seq, nop_idx):
@@ -1182,7 +1189,8 @@ class BOiLSOptimizer:
                  enable_ple=False, init_seq_len=0,
                  batch_k=2, elite_size=15,
                  enable_cc_ssk=True, circuit_weight=0.3,
-                 enable_seeded_init=True):
+                 enable_seeded_init=True,
+                 surrogate=None, surrogate_skip_margin=1.5):
         self.evaluator = evaluator
         self.n_actions = n_actions
         self.n_init = max(n_init, 5)
@@ -1236,6 +1244,10 @@ class BOiLSOptimizer:
         self.best_x = None
         self.best_y = -float("inf")
 
+        # 代理模型（可选）
+        self.surrogate = surrogate
+        self.surrogate_skip_margin = surrogate_skip_margin
+
     def _compute_seq_feat(self, seq: list) -> np.ndarray:
         """从序列索引提取结构特征，无需执行ABC，可用于任意候选序列。
         特征(9维): [frac_rewrite, frac_resub, frac_balance, frac_macro,
@@ -1276,9 +1288,47 @@ class BOiLSOptimizer:
             return canonicalize_seq(seq, self.nop_idx)
         return list(seq)
 
+    def _is_valid_seq(self, seq: list) -> bool:
+        """dch 及其 flag 指令后不能跟 rewrite/resub/refactor/&dsdb（去 NOP 后检查）。"""
+        acts = self.evaluator.actions
+        eff = [int(a) for a in seq
+               if self.nop_idx is None or int(a) != self.nop_idx]
+        for i in range(1, len(eff)):
+            p = acts[eff[i - 1]]
+            c = acts[eff[i]]
+            if "dch" in p and (
+                "rewrite" in c or "resub" in c
+                or "refactor" in c or "&dsdb" in c
+            ):
+                return False
+        return True
+
+    def _surr_to_cost(self, surr_pred) -> float:
+        """将代理模型预测的 [area, delay] 转换为与 _compute_cost 一致的 cost 标量。"""
+        init = self.evaluator.init_stats
+        opt = self.evaluator.optimize
+        if self.evaluator.mapping and init.get("area", -1) > 0:
+            a_r = float(surr_pred[0]) / max(init["area"], 1e-10)
+            d_r = float(surr_pred[1]) / max(init["delay"], 1e-10)
+        else:
+            a_r = float(surr_pred[0]) / max(init.get("nodes", 1), 1)
+            d_r = float(surr_pred[1]) / max(init.get("levels", 1), 1)
+        if opt == "area":
+            return a_r
+        elif opt == "delay":
+            return d_r
+        else:
+            return a_r * d_r
+
     def _rand_seq(self):
-        eff_len = int(self.rng.integers(self.min_eff_len, self.max_eff_len + 1))
-        return list(self.rng.integers(0, self.n_actions, size=eff_len))
+        for _ in range(200):
+            eff_len = int(self.rng.integers(self.min_eff_len, self.max_eff_len + 1))
+            if eff_len <= 0:
+                return []
+            seq = list(self.rng.integers(0, self.n_actions, size=eff_len))
+            if self._is_valid_seq(seq):
+                return seq
+        return seq  # 200次均失败时直接返回（极低概率）
 
     def _normalize(self):
         ya = np.array(self.y_neg_cost)
@@ -1330,6 +1380,9 @@ class BOiLSOptimizer:
         # 类型3 / 兜底：纯随机补足
         while len(seeds) < n:
             seeds.append(self._rand_seq())
+
+        # 统一过滤非法序列（dch 约束）
+        seeds = [s if self._is_valid_seq(s) else self._rand_seq() for s in seeds]
 
         return seeds[:n]
 
@@ -1392,6 +1445,8 @@ class BOiLSOptimizer:
                 pos = int(self.rng.integers(0, len(child)))
                 child[pos] = int(self.rng.integers(0, self.n_actions))
 
+            if not self._is_valid_seq(child):
+                child = self._rand_seq()
             cands.append(child)
 
         return cands
@@ -1445,6 +1500,9 @@ class BOiLSOptimizer:
                 self.best_x = list(seq)
 
         print(f"[CircuitSyn] 初始化完成, best_cost={-self.best_y:.6f}")
+        if self.surrogate and self.surrogate.enabled:
+            print(f"[Surrogate] 代理模型已启用，剪枝比={self.surrogate.safe_cut_ratio*100:.0f}%，"
+                  f"skip_margin={self.surrogate_skip_margin}")
         remaining = n_iters - len(self.X)
         print(f"[CircuitSyn] GP(CC-SSK) + TR + EGBO 搜索 "
               f"(剩余预算 {remaining} 次评估) ...\n")
@@ -1545,10 +1603,27 @@ class BOiLSOptimizer:
             # ---- EGBO: 生成候选（TR随机 + 进化候选）----
             if self.best_x is None:
                 self.best_x = self._rand_seq()
-            tr_cands = self.tr.sample(self.best_x, self.n_cand, self.rng)
+            tr_cands = [
+                c if self._is_valid_seq(c) else self._rand_seq()
+                for c in self.tr.sample(self.best_x, self.n_cand, self.rng)
+            ]
             evo_cands = self._evo_candidates(self.n_cand * 2)
             rand_cands = [self._rand_seq() for _ in range(self.n_cand)]
             all_cands = tr_cands + evo_cands + rand_cands
+
+            # ---- 代理模型剪枝：去掉预测最差的 30% ----
+            if self.surrogate and self.surrogate.enabled and len(all_cands) > self.batch_k * 4:
+                _surr_preds = self.surrogate.predict_batch(all_cands)   # (N, 2)
+                _surr_prods = _surr_preds[:, 0] * _surr_preds[:, 1]
+                _n_keep = max(self.batch_k * 4, int(len(all_cands) * 0.70))
+                _keep_idx = np.argsort(_surr_prods)[:_n_keep]
+                # 同步记录 rand 段在剪枝后的位置，用于 rand_best 选取
+                _orig_rand_start = len(tr_cands) + len(evo_cands)
+                _rand_positions = [new_i for new_i, orig_i in enumerate(_keep_idx)
+                                   if orig_i >= _orig_rand_start]
+                all_cands = [all_cands[i] for i in _keep_idx]
+            else:
+                _rand_positions = list(range(len(tr_cands) + len(evo_cands), len(all_cands)))
 
             # ---- GP 对全部候选打 EI 分（纯推断，无 ABC 调用）----
             all_feats = [self._compute_seq_feat(c) for c in all_cands]
@@ -1563,11 +1638,10 @@ class BOiLSOptimizer:
             self.evaluator._ei_threshold = ei_p80
 
             # ---- 选 top-K 候选实际评估（EGBO 批量）----
-            # 强制从 rand_cands 中保留 1 个 EI 最高者，其余按全局 EI 递减补满
+            # 强制保留 rand 段中 EI 最高的一个
             top_k = min(self.batch_k, len(all_cands))
-            rand_offset = len(tr_cands) + len(evo_cands)
-            if rand_offset < len(ei):
-                rand_best = rand_offset + int(np.argmax(ei[rand_offset:]))
+            if _rand_positions:
+                rand_best = _rand_positions[int(np.argmax(ei[_rand_positions]))]
             else:
                 rand_best = int(np.argmax(ei))
             all_sorted = list(np.argsort(ei)[::-1])
@@ -1582,9 +1656,47 @@ class BOiLSOptimizer:
                 if t >= n_iters:
                     break
                 pick = all_cands[int(idx)]
+                pick_list = list(pick)
+
+                # ---- 代理+GP 联合判断：是否跳过 ABC ----
+                _surr_skip = False
+                _skip_cost = None
+                if (self.surrogate and self.surrogate.enabled
+                        and self.best_y > -float("inf")):
+                    best_cost_now = -self.best_y
+                    # GP 预测 cost（反归一化 mu → 原始 neg_cost → cost）
+                    _gp_neg = float(mu[int(idx)]) * ys + ym    # 归一化 neg_cost → 实际 neg_cost
+                    _gp_cost = max(-_gp_neg, 1e-10)
+                    # 代理模型预测 cost
+                    _sp = self.surrogate.predict_batch([pick_list])[0]  # [area, delay]
+                    _sc = self._surr_to_cost(_sp)
+                    # 加权平均：GP 和代理各占 50%
+                    _combined = 0.5 * _gp_cost + 0.5 * _sc
+                    if _combined > best_cost_now * self.surrogate_skip_margin:
+                        _surr_skip = True
+                        _skip_cost = _sc
+
+                if _surr_skip:
+                    # 用代理预测结果代替 ABC，加入 GP 训练数据但不更新最优解
+                    cost = _skip_cost
+                    nc = -cost
+                    self.X.append(pick_list)
+                    self._seq_feats.append(self._compute_seq_feat(pick_list))
+                    self.y_neg_cost.append(nc)
+                    # 不调用 _update_elite / 不更新 best_y（代理结果不可信作为最优）
+                    improved = False
+                    no_improve_rounds += 1
+                    self.tr.update(False)
+                    t += 1
+                    print(f"  [{t:02d}][surr] cost={cost:.6f}  (代理预测跳过ABC)")
+                    if (no_improve_rounds >= stagnation_patience
+                            and self._try_stagnation_ple_expand()):
+                        no_improve_rounds = 0
+                    continue
+
+                # ---- 正常 ABC 评估（原有代码）----
                 cost = self.evaluator(pick)
                 nc = -cost
-                pick_list = list(pick)
                 self.X.append(pick_list)
                 self._seq_feats.append(self._compute_seq_feat(pick_list))
                 self.y_neg_cost.append(nc)
@@ -1668,7 +1780,7 @@ def save_results(evaluator: SynthesisEvaluator, optimizer: BOiLSOptimizer,
             "n_actions": len(evaluator.actions),
             "actions": [a for a in evaluator.actions if a != NOP],
             "optimize": evaluator.optimize,
-            "ssk_order": optimizer.kernel.order,
+            "ssk_order": getattr(optimizer.kernel, "order", None),
             "final_theta_m": optimizer.kernel.theta_m,
             "final_theta_g": optimizer.kernel.theta_g,
             "tr_restarts": optimizer.tr.restarts,
@@ -1819,6 +1931,16 @@ def parse_args():
     parser.add_argument("--verbose", action="store_true",
                         help="显示详细搜索日志")
 
+    # ---- 代理模型加速 ----
+    parser.add_argument("--surrogate_ckpt_dir", type=str, default="",
+                        help="代理模型 checkpoint 目录，空=禁用代理加速")
+    parser.add_argument("--surrogate_aag", type=str, default="",
+                        help="电路 AAG 文件路径（代理模型编码电路图用）")
+    parser.add_argument("--surrogate_csv", type=str, default="",
+                        help="代理模型可靠性 CSV 路径（可选，空=跳过可靠性检查）")
+    parser.add_argument("--surrogate_skip_margin", type=float, default=1.5,
+                        help="联合预测超过 best_cost * margin 时跳过 ABC (default: 1.5)")
+
     return parser.parse_args()
 
 
@@ -1848,6 +1970,21 @@ def main():
         multifidelity=args.multifidelity,
     )
 
+    surrogate = None
+    if args.surrogate_ckpt_dir and _SURROGATE_AVAILABLE:
+        circuit_name = Path(args.input_file).stem
+        aag_path = args.surrogate_aag or args.input_file
+        surrogate = ModelSurrogate(
+            circuit_name=circuit_name,
+            aag_path=aag_path,
+            ckpt_dir=args.surrogate_ckpt_dir,
+            actions=actions,
+            csv_path=args.surrogate_csv,
+            device="cpu",
+        )
+    elif args.surrogate_ckpt_dir and not _SURROGATE_AVAILABLE:
+        print("[警告] 指定了 --surrogate_ckpt_dir 但 model_surrogate 模块不可导入，代理加速已跳过")
+
     optimizer = BOiLSOptimizer(
         evaluator=evaluator,
         seq_len=args.seq_len,
@@ -1864,6 +2001,8 @@ def main():
         enable_cc_ssk=not args.no_cc_ssk,
         circuit_weight=args.circuit_weight,
         enable_seeded_init=not args.no_seeded_init,
+        surrogate=surrogate,
+        surrogate_skip_margin=args.surrogate_skip_margin,
     )
 
     print(f"\n{'='*60}")
