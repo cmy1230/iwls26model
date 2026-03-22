@@ -1394,8 +1394,8 @@ class SynthesisEvaluator:
 #         c. 评估 QoR(seq_{t+1}), 更新 D, 更新 ρ
 # ============================================================================
 
-R2_THRESHOLD = 0.70
-PSEUDO_THRESHOLD = 0.70
+R2_THRESHOLD = 0.25
+PSEUDO_THRESHOLD = 0.25
 
 
 class BOiLSOptimizer:

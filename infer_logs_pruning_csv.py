@@ -61,8 +61,8 @@ def _infer_test_product(
     device: torch.device,
     normalizer: Optional[LabelNormalizer],
     batch_size: int,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """返回 test 集上逐样本的 (pred_area*delay, true_area*delay)，顺序与 test_ds 行顺序一致。"""
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """返回 test 集上逐样本的 (pred_area*delay, true_area*delay) 及原始 pred/true 数组。"""
     all_gids = sorted(test_ds.df["gid"].unique().tolist())
     gid2indices: Dict[int, List[int]] = {g: test_ds.df[test_ds.df["gid"] == g].index.tolist() for g in all_gids}
 
@@ -110,12 +110,20 @@ def _infer_test_product(
 
     pred_t = torch.cat(pred_parts, dim=0)
     true_t = torch.cat(true_parts, dim=0)
-    prod_p = (pred_t[:, 0] * pred_t[:, 1]).numpy()
-    prod_t = (true_t[:, 0] * true_t[:, 1]).numpy()
-    return prod_p, prod_t
+    pred_np = pred_t.numpy()
+    true_np = true_t.numpy()
+    prod_p = pred_np[:, 0] * pred_np[:, 1]
+    prod_t = true_np[:, 0] * true_np[:, 1]
+    return prod_p, prod_t, pred_np, true_np
 
 
 def run(args: argparse.Namespace) -> None:
+    def _r2(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+        ss_tot = np.sum((y_true - y_true.mean()) ** 2)
+        if ss_tot < 1e-10:
+            return 0.0
+        return float(1.0 - np.sum((y_true - y_pred) ** 2) / ss_tot)
+
     device = torch.device("cpu")
     task_names = ["area", "delay"]
     log_dir = Path(args.log_dir)
@@ -137,7 +145,7 @@ def run(args: argparse.Namespace) -> None:
         row_head = [circuit, str(log_path)]
 
         if not os.path.isfile(ckpt_path):
-            rows.append(row_head + ["missing_ckpt", ""] + [""] * n_metric_cols)
+            rows.append(row_head + ["missing_ckpt", ""] + [""] * n_metric_cols + ["", "", ""])
             print(f"[SKIP] {circuit}: 无检查点 {ckpt_path}")
             continue
 
@@ -173,11 +181,11 @@ def run(args: argparse.Namespace) -> None:
         )
         n_test = len(test_ds)
         if n_test == 0:
-            rows.append(row_head + ["empty_test", 0] + [""] * n_metric_cols)
+            rows.append(row_head + ["empty_test", 0] + [""] * n_metric_cols + ["", "", ""])
             print(f"[SKIP] {circuit}: test 集为空")
             continue
 
-        prod_pred, prod_true = _infer_test_product(
+        prod_pred, prod_true, pred_arr, true_arr = _infer_test_product(
             test_ds, model, task_names, device, normalizer, args.batch_size
         )
 
@@ -190,13 +198,26 @@ def run(args: argparse.Namespace) -> None:
                 # 占「真值最小 q%」集合大小的比例 → 百分比（误伤率）
                 metrics.append(round(float(st["mis_hit_rate"]) * 100.0, 6))
 
-        rows.append(row_head + ["ok", n_test] + metrics)
-        print(f"[OK] {circuit} n_test={n_test} pct_of_truemin_subset={metrics}")
+        r2_area = _r2(true_arr[:, 0], pred_arr[:, 0])
+        r2_delay = _r2(true_arr[:, 1], pred_arr[:, 1])
+        r2_product = _r2(prod_true, prod_pred)
+        rows.append(
+            row_head
+            + ["ok", n_test]
+            + metrics
+            + [round(r2_area, 6), round(r2_delay, 6), round(r2_product, 6)]
+        )
+        print(
+            f"[OK] {circuit} n_test={n_test} metrics={metrics} "
+            f"r2=({r2_area:.3f},{r2_delay:.3f},{r2_product:.3f})"
+        )
 
     headers = ["circuit", "log_path", "status", "n_test"]
     for cp in cut_pcts:
         for tq in true_pcts:
             headers.append(f"hit_pct_of_truemin{tq}_subset_predmax{cp}")
+
+    headers += ["r2_area", "r2_delay", "r2_product"]
 
     with open(args.output_csv, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)

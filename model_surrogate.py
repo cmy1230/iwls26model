@@ -131,16 +131,10 @@ class ReliabilityChecker:
             print(f"[Surrogate] {circuit_name} 各剪枝比例均超过20%误伤阈值，禁用")
             return result
 
-        ra = _row_get_ci(row, "r2_area")
-        rd = _row_get_ci(row, "r2_delay")
-        if (
-            ra is not None
-            and str(ra).strip() != ""
-            and rd is not None
-            and str(rd).strip() != ""
-        ):
+        rp = _row_get_ci(row, "r2_product")
+        if rp is not None and str(rp).strip() != "":
             try:
-                r2_combined = (float(ra) + float(rd)) / 2.0
+                r2_combined = float(rp)
             except (TypeError, ValueError):
                 r2_combined = safe_cut_ratio
         else:
