@@ -31,7 +31,13 @@ from pathlib import Path
 
 def run_one(blif_path: str, abc_exe: str, output_dir: str,
             mapping: str, map_arg: str, cell_lib: str,
-            extra_args: list, script_path: str) -> dict:
+            extra_args: list, script_path: str,
+            surrogate_ckpt_dir: str = "",
+            surrogate_aag_dir: str = "",
+            surrogate_csv: str = "",
+            surrogate_skip_delta: float = 0.08,
+            surrogate_skip_delta_min: float = 0.06,
+            kernel_noise_var: float = 1e-2) -> dict:
     """对单个 BLIF 文件运行 bayesian_search.py，返回结果字典"""
     stem = Path(blif_path).stem
     json_out = str(Path(output_dir) / f"bayesian_result_{stem}.json")
@@ -48,6 +54,16 @@ def run_one(blif_path: str, abc_exe: str, output_dir: str,
         cmd += ["--map_arg", map_arg]
     if cell_lib:
         cmd += ["--cell_lib", cell_lib]
+    if surrogate_ckpt_dir:
+        cmd += ["--surrogate_ckpt_dir", surrogate_ckpt_dir]
+    if surrogate_aag_dir:
+        cmd += ["--surrogate_aag_dir", surrogate_aag_dir]
+    if surrogate_csv:
+        cmd += ["--surrogate_csv", surrogate_csv]
+    if surrogate_ckpt_dir:   # 只在代理启用时透传这两个参数
+        cmd += ["--surrogate_skip_delta", str(surrogate_skip_delta),
+                "--surrogate_skip_delta_min", str(surrogate_skip_delta_min),
+                "--kernel_noise_var", str(kernel_noise_var)]
     cmd += extra_args
 
     t0 = time.time()
@@ -105,12 +121,13 @@ def run_one(blif_path: str, abc_exe: str, output_dir: str,
         "best_sequence": data.get("best_sequence_str", ""),
         "abc_verify_cmd": data.get("abc_verify_cmd", ""),
         "n_trials": data.get("n_trials", ""),
+        "n_evaluated": data.get("n_evaluated", ""),
         "elapsed_sec": f"{elapsed:.1f}",
     }
 
     print(f"[DONE]  {stem}  ({elapsed:.0f}s)  "
           f"nodes={best.get('nodes','')}  area={best.get('area','')}  "
-          f"delay={best.get('delay','')}  cost={data.get('best_cost',''):.6f}")
+          f"delay={best.get('delay','')}  cost={data.get('best_cost', 0):.6f}")
     return row
 
 
@@ -138,6 +155,19 @@ def main():
                         help="标准单元库路径，透传给 bayesian_search.py")
     parser.add_argument("--extra_args", type=str, default="",
                         help="额外参数，原样透传给 bayesian_search.py (如 \"--seq_len 25 --n_trials 500\")")
+    # ---- 代理模型加速 ----
+    parser.add_argument("--surrogate_ckpt_dir", type=str, default="",
+                        help="代理模型 ckpt 目录，空=禁用 (default: '')")
+    parser.add_argument("--surrogate_aag_dir", type=str, default="",
+                        help="AAG 文件目录，自动按电路名查找 (default: '')")
+    parser.add_argument("--surrogate_csv", type=str, default="",
+                        help="代理可靠性 CSV 路径 (default: '')")
+    parser.add_argument("--surrogate_skip_delta", type=float, default=0.08,
+                        help="skip_delta 初始值 (default: 0.08)")
+    parser.add_argument("--surrogate_skip_delta_min", type=float, default=0.06,
+                        help="skip_delta 终止值 (default: 0.06)")
+    parser.add_argument("--kernel_noise_var", type=float, default=1e-2,
+                        help="GP 对角噪声方差 (default: 1e-2)")
     parser.add_argument("--script", type=str, default="",
                         help="bayesian_search.py 脚本路径 (default: 与本脚本同目录)")
 
@@ -193,7 +223,7 @@ def main():
         "best_nodes", "best_levels", "best_area", "best_delay",
         "best_cost",
         "nodes_improve", "levels_improve", "area_improve", "delay_improve",
-        "best_sequence", "abc_verify_cmd", "n_trials", "elapsed_sec",
+        "best_sequence", "abc_verify_cmd", "n_trials", "n_evaluated", "elapsed_sec",
     ]
 
     with open(output_csv, "w", newline="", encoding="utf-8") as f:
@@ -219,6 +249,12 @@ def main():
                 str(bf), args.abc_exe, output_dir,
                 args.mapping, args.map_arg, args.cell_lib,
                 extra_args, script_path,
+                args.surrogate_ckpt_dir,
+                args.surrogate_aag_dir,
+                args.surrogate_csv,
+                args.surrogate_skip_delta,
+                args.surrogate_skip_delta_min,
+                args.kernel_noise_var,
             )
             futures[fut] = bf.stem
 
