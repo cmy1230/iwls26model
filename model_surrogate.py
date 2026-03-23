@@ -13,6 +13,8 @@ from label_normalizer import LabelNormalizer
 from model import load_pt_checkpoint
 from seq_preprocessing import DEFAULT_COMMANDS
 
+torch.set_num_threads(1)
+torch.set_num_interop_threads(1)
 
 def _norm_header_key(k: Any) -> str:
     """表头或行键：去 BOM、首尾空白，便于与 'circuit' 等列名匹配。"""

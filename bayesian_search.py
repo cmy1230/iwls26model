@@ -31,7 +31,11 @@ BOiLS: Bayesian Optimisation for Logic Synthesis
     # 仅原子动作
     python bayesian_search.py --abc_exe ./abc --input_file sin.blif --no_macros --seq_len 30
 """
-
+import os
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 import argparse
 import json
 import math
@@ -1191,7 +1195,7 @@ class BOiLSOptimizer:
                  enable_cc_ssk=True, circuit_weight=0.3,
                  enable_seeded_init=True,
                  surrogate=None, surrogate_skip_delta=0.08,
-                 surrogate_skip_delta_min=0.06,
+                 surrogate_skip_delta_min=0.05,
                  ts_prob=0.5, diversity_thresh=0.8,
                  kernel_noise_var=1e-2):
         self.evaluator = evaluator
