@@ -500,7 +500,7 @@ class SSKKernel:
     """
 
     def __init__(self, subseq_order=2, theta_m=0.8, theta_g=0.8,
-                 signal_var=1.0, noise_var=1e-4, nop_idx=None,
+                 signal_var=1.0, noise_var=1e-2, nop_idx=None,
                  circuit_weight=0.3, circuit_sigma=0.5):
         self.order       = subseq_order
         self.theta_m     = theta_m
@@ -739,24 +739,16 @@ class GaussianProcessSSK:
         self.alpha = None
         self._K_cache = None
         self._hp_stamp = None
-        self.noise_extra = np.array([], dtype=float)
-        self.last_quality = 1.0
-        self.gp_quality_ema = 1.0
+        self._suppress_chol_warn = False
 
     def _hp_key(self):
         k = self.kernel
         return (k.theta_m, k.theta_g, k.signal_var, k.noise_var)
 
-    def fit(self, X, y, noise_extra=None):
+    def fit(self, X, y):
         self.X = [list(x) for x in X]
         self.y = np.asarray(y, dtype=float)
         n = len(X)
-        if noise_extra is None:
-            self.noise_extra = np.zeros(n, dtype=float)
-        else:
-            self.noise_extra = np.asarray(noise_extra, dtype=float)
-            if self.noise_extra.shape[0] != n:
-                raise ValueError("noise_extra length must match X length")
 
         hp       = self._hp_key()
         n_cached = self._K_cache.shape[0] if self._K_cache is not None else 0
@@ -784,29 +776,18 @@ class GaussianProcessSSK:
         # --- 应用 CC-SSK 权重（模块C）---
         # apply_cc_ssk 读取 kernel._circuit_feats，若为 None 则原样返回
         self.K = self.kernel.apply_cc_ssk(K)
-        if n > 0:
-            self.K[np.diag_indices(n)] += self.noise_extra
 
         self._factor()
 
     def _factor(self):
         n = len(self.y)
-        _JITTER_QUALITY = {
-            1e-6: 1.0,
-            1e-5: 0.9,
-            1e-4: 0.7,
-            1e-3: 0.4,
-            1e-2: 0.15,
-            0.1: 0.05,
-        }
         for jitter in (1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 0.1):
             try:
                 K_work = self.K.copy()
                 K_work[np.diag_indices(n)] += jitter
                 self.L_cho, self._lo = cho_factor(K_work, lower=True)
                 self.alpha = cho_solve((self.L_cho, self._lo), self.y)
-                self.last_quality = _JITTER_QUALITY.get(jitter, 0.0)
-                if jitter > 1e-4:
+                if jitter > 1e-4 and not self._suppress_chol_warn:
                     print(f"  [GP] Cholesky 收敛 (jitter={jitter:.0e})")
                 return
             except np.linalg.LinAlgError:
@@ -816,7 +797,6 @@ class GaussianProcessSSK:
         K_fixed = eigvecs @ np.diag(eigvals) @ eigvecs.T
         self.L_cho, self._lo = cho_factor(K_fixed, lower=True)
         self.alpha = cho_solve((self.L_cho, self._lo), self.y)
-        self.last_quality = 0.0
         print("  [GP] 特征值修正强制正定")
 
     def predict(self, X_new, X_new_feats=None):
@@ -847,27 +827,31 @@ class GaussianProcessSSK:
 
         def obj(params):
             self.kernel.set_params(params[0], params[1], params[2])
-            self.fit(X_save, y_save, noise_extra=self.noise_extra)
+            self.fit(X_save, y_save)
             return self.neg_log_ml()
 
-        for _ in range(n_restarts):
-            x0 = [rng.uniform(0.60, 0.98), rng.uniform(0.1, 0.95),
-                   rng.uniform(0.5, 2.0)]
-            try:
-                r = scipy_minimize(
-                    obj, x0,
-                    bounds=[(0.60, 0.98), (0.05, 0.95), (0.05, 5.0)],
-                    method="L-BFGS-B",
-                    options={"maxiter": max_iter, "ftol": 1e-3},
-                )
-                if r.fun < best_nlml:
-                    best_nlml = r.fun
-                    best_p = (float(r.x[0]), float(r.x[1]), float(r.x[2]))
-            except Exception:
-                pass
+        self._suppress_chol_warn = True
+        try:
+            for _ in range(n_restarts):
+                x0 = [rng.uniform(0.60, 0.95), rng.uniform(0.1, 0.95),
+                       rng.uniform(0.5, 2.0)]
+                try:
+                    r = scipy_minimize(
+                        obj, x0,
+                        bounds=[(0.60, 0.95), (0.05, 0.95), (0.05, 5.0)],
+                        method="L-BFGS-B",
+                        options={"maxiter": max_iter, "ftol": 1e-3},
+                    )
+                    if r.fun < best_nlml:
+                        best_nlml = r.fun
+                        best_p = (float(r.x[0]), float(r.x[1]), float(r.x[2]))
+                except Exception:
+                    pass
+        finally:
+            self._suppress_chol_warn = False
 
         self.kernel.set_params(*best_p)
-        self.fit(X_save, y_save, noise_extra=self.noise_extra)
+        self.fit(X_save, y_save)
 
 
 # ============================================================================
@@ -1206,8 +1190,10 @@ class BOiLSOptimizer:
                  batch_k=2, elite_size=15,
                  enable_cc_ssk=True, circuit_weight=0.3,
                  enable_seeded_init=True,
-                 surrogate=None, surrogate_skip_delta=0.1,
-                 ts_prob=0.5, diversity_thresh=0.8):
+                 surrogate=None, surrogate_skip_delta=0.08,
+                 surrogate_skip_delta_min=0.06,
+                 ts_prob=0.5, diversity_thresh=0.8,
+                 kernel_noise_var=1e-2):
         self.evaluator = evaluator
         self.n_actions = n_actions
         self.n_init = max(n_init, 5)
@@ -1226,7 +1212,8 @@ class BOiLSOptimizer:
         _cw = circuit_weight if enable_cc_ssk else 0.0
         self.kernel = SSKKernel(subseq_order=ssk_order,
                                 nop_idx=self.nop_idx,
-                                circuit_weight=_cw)
+                                circuit_weight=_cw,
+                                noise_var=kernel_noise_var)
         self.gp = GaussianProcessSSK(self.kernel)
 
         # ---- 模块B: PLE 渐进长度扩展（默认关闭）----
@@ -1258,19 +1245,18 @@ class BOiLSOptimizer:
         self.X = []
         self._seq_feats = []   # 与 self.X 一一对应
         self.y_neg_cost = []
-        self._noise_extra = []
         self.best_x = None
         self.best_y = -float("inf")
 
         # 代理模型（可选）
         self.surrogate = surrogate
-        self.surrogate_skip_delta = surrogate_skip_delta
+        self.surrogate_skip_delta = surrogate_skip_delta       # 初始（最大）阈值
+        self.surrogate_skip_delta_min = surrogate_skip_delta_min   # 终止（最小）阈值
 
         self.ts_prob = ts_prob
         self.diversity_thresh = diversity_thresh
-        # GP 质量 EMA（0~1）：初始假设健康
-        self.gp.gp_quality_ema = 1.0
-        self._gp_quality_alpha = 0.3
+
+        self._evaluated_set: set = set()   # 已评估序列的规范化 tuple 集合
 
     def _compute_seq_feat(self, seq: list) -> np.ndarray:
         """从序列索引提取结构特征，无需执行ABC，可用于任意候选序列。
@@ -1360,6 +1346,27 @@ class BOiLSOptimizer:
         ys = max(ya.std(), 1e-8)
         return ya, ym, ys
 
+    def _gp_training_pack(self, yn):
+        """GP 拟合用 (X, y, circuit_feats)；len(X)>150 时取最优50+最近50 子集。"""
+        yn = np.asarray(yn, dtype=float)
+        _keep = None
+        _gp_X = self.X
+        _gp_yn = yn
+        if len(self.X) > 150:
+            _best_idx = list(np.argsort(np.array(self.y_neg_cost, dtype=float))[-50:])
+            _recent_idx = list(range(len(self.X) - 50, len(self.X)))
+            _keep = sorted(set(_best_idx + _recent_idx))
+            _gp_X = [self.X[i] for i in _keep]
+            _gp_yn = yn[_keep]
+        if self.kernel.circuit_weight > 0 and len(self._seq_feats) == len(self.X):
+            if _keep is not None:
+                cfeats = np.array([self._seq_feats[i] for i in _keep], dtype=np.float64)
+            else:
+                cfeats = np.array(self._seq_feats, dtype=np.float64)
+        else:
+            cfeats = None
+        return _gp_X, _gp_yn, cfeats
+
     # ----------------------------------------------------------------
     #  模块A: 宏序列热启动
     # ----------------------------------------------------------------
@@ -1370,10 +1377,10 @@ class BOiLSOptimizer:
         用 `a in MACRO_ACTIONS` 精确识别宏动作，避免误判含分号的原子动作
         （如 "&get -n; &dsdb; &put"）。
 
-        各占 1/3 策略：
-          1/3 - 宏重复：宏动作索引重复填满 seq_len 槽
-          1/3 - 宏前缀：宏动作 + 随机后缀
-          1/3 - 纯随机：保持探索性
+        各占比策略：
+          1/4 - 宏重复：宏动作索引重复填满 seq_len 槽
+          1/4 - 宏前缀：宏动作 + 随机后缀
+          1/2 - 纯随机：保持探索性
         """
         macro_indices = [
             i for i, a in enumerate(self.evaluator.actions)
@@ -1381,8 +1388,8 @@ class BOiLSOptimizer:
         ]
 
         seeds = []
-        n_repeat = n // 3
-        n_hybrid = n // 3
+        n_repeat = n // 4
+        n_hybrid = n // 4
 
         if macro_indices:
             # 类型1：宏重复（循环复用宏索引列表）
@@ -1522,19 +1529,44 @@ class BOiLSOptimizer:
         print(f"[CircuitSyn] {label} ({self.n_init} 样本, "
               f"初始有效长度上界={self.max_eff_len}) ...")
 
-        init_seqs = (self._seeded_init_sequences(self.n_init)
-                     if self.enable_seeded_init
-                     else [self._rand_seq() for _ in range(self.n_init)])
+        _init_pool_mult = 5   # 候选池扩大倍数
+        _init_pool_size = self.n_init * _init_pool_mult
 
+        if self.enable_seeded_init:
+            _init_pool = self._seeded_init_sequences(_init_pool_size)
+        else:
+            _init_pool = [self._rand_seq() for _ in range(_init_pool_size)]
+
+        if self.surrogate and self.surrogate.enabled and len(_init_pool) > self.n_init:
+            _init_preds = self.surrogate.predict_batch(_init_pool)   # (N, 2)
+            _init_prods = _init_preds[:, 0] * _init_preds[:, 1]
+            _top_idx = np.argsort(_init_prods)[:self.n_init]
+            init_seqs = [_init_pool[i] for i in _top_idx]
+            print(f"[Surrogate] Phase1 代理引导：从 {_init_pool_size} 个候选中选出 top-{self.n_init}")
+        else:
+            init_seqs = _init_pool[:self.n_init]
+
+        abc_phase1 = 0
         for seq in init_seqs:
             if timeout > 0 and time.time() - t0 > timeout:
                 break
+            _key = tuple(self._canonicalize(seq))
+            if _key in self._evaluated_set:
+                continue
+            self._evaluated_set.add(_key)
             cost = self.evaluator(seq)
+            abc_phase1 += 1
             nc = -cost
-            self.X.append(seq)
-            self._seq_feats.append(self._compute_seq_feat(seq))
-            self.y_neg_cost.append(nc)
-            self._noise_extra.append(0.0)
+            # 相似度去重（不影响精英池和 best_y，只跳过 GP 数据加入）
+            _add_to_gp = True
+            if len(self.X) > 0:
+                _max_sim = max(self.kernel.normalized(seq, x) for x in self.X[-100:])
+                if _max_sim > 0.95:
+                    _add_to_gp = False
+            if _add_to_gp:
+                self.X.append(seq)
+                self._seq_feats.append(self._compute_seq_feat(seq))
+                self.y_neg_cost.append(nc)
             self._update_elite(seq, cost)
 
             improved_init = nc > self.best_y
@@ -1550,25 +1582,59 @@ class BOiLSOptimizer:
             delay = st.get("delay", st.get("levels", -1))
             seq_str = "; ".join(ev.indices_to_strs(seq))
             print(
-                f"  [{len(self.X):02d}][init]{star} cost={cost:.6f}  "
+                f"  [{abc_phase1:02d}][init]{star} cost={cost:.6f}  "
                 f"len={len(seq)}/{self.max_eff_len}  "
                 f"area={area}  delay={delay}\n"
                 f"         序列: {seq_str}"
             )
 
         print(f"[CircuitSyn] 初始化完成, best_cost={-self.best_y:.6f}")
+
+        # ---- GP 伪观测热启动（仅当代理可用时）----
+        if self.surrogate and self.surrogate.enabled:
+            _n_pseudo_raw = 300
+            _pseudo_seqs_raw = [self._rand_seq() for _ in range(_n_pseudo_raw)]
+            # 对伪序列做 SSK 去重，保留彼此 SSK < 0.90 的子集，最多保留 80 个
+            _pseudo_seqs = []
+            for _ps in _pseudo_seqs_raw:
+                if all(self.kernel.normalized(_ps, _ex) < 0.90 for _ex in _pseudo_seqs[-30:]):
+                    _pseudo_seqs.append(_ps)
+                if len(_pseudo_seqs) >= 80:
+                    break
+            _n_pseudo = len(_pseudo_seqs)
+            if _pseudo_seqs:
+                _pseudo_preds = self.surrogate.predict_batch(_pseudo_seqs)  # (N, 2)
+                _pseudo_costs = np.array([self._surr_to_cost(p) for p in _pseudo_preds])
+                _pseudo_nc = -_pseudo_costs                               # neg_cost
+                ya_real, ym, ys = self._normalize()
+                yn_real = (ya_real - ym) / ys
+                _pseudo_yn = (_pseudo_nc - ym) / ys
+                _yn_aug = np.concatenate([yn_real, _pseudo_yn])
+                _orig_noise = self.kernel.signal_var
+                _cc_save = self.kernel._circuit_feats
+                self.kernel._circuit_feats = None
+                self.kernel.set_params(self.kernel.theta_m, self.kernel.theta_g,
+                                       signal_var=_orig_noise * 3.0)
+                _X_aug = list(self.X) + _pseudo_seqs
+                self.gp.fit(_X_aug, _yn_aug)
+                self.kernel.set_params(self.kernel.theta_m, self.kernel.theta_g,
+                                       signal_var=_orig_noise)
+                self.kernel._circuit_feats = _cc_save
+
+                print(f"[Surrogate] GP 伪观测热启动：注入 {_n_pseudo} 个虚拟数据点")
+
         if self.surrogate and self.surrogate.enabled:
             print(f"[Surrogate] 代理模型已启用，剪枝比={self.surrogate.safe_cut_ratio*100:.0f}%，"
                   f"skip_delta={self.surrogate_skip_delta}")
-        remaining = n_iters - len(self.X)
+        remaining = n_iters - abc_phase1
         print(f"[CircuitSyn] GP(CC-SSK) + TR + EGBO 搜索 "
               f"(剩余预算 {remaining} 次评估) ...\n")
 
         # ================================================================
         # Phase 2: GP 引导的贝叶斯优化主循环
-        # t 计数实际 ABC 评估次数（含 Phase 1）
+        # t 计数实际 ABC 评估次数（含 Phase 1；可与 len(X) 不同，因 GP 相似度去重）
         # ================================================================
-        t = len(self.X)   # Phase 1 已消耗的评估次数
+        t = abc_phase1
         no_improve_rounds = 0
         stagnation_patience = 10  # 连续无改进轮数触发停滞扩展（短序列空间不宜过大）
 
@@ -1581,40 +1647,32 @@ class BOiLSOptimizer:
             ya, ym, ys = self._normalize()
             yn = (ya - ym) / ys
 
-            # ---- 注入 CC-SSK 序列结构特征（模块C）----
-            if self.kernel.circuit_weight > 0 and len(self._seq_feats) == len(self.X):
-                self.kernel._circuit_feats = np.array(self._seq_feats, dtype=np.float64)
-            else:
-                self.kernel._circuit_feats = None
-
-            # ---- 拟合 GP ----
-            self.gp.fit(self.X, yn, noise_extra=self._noise_extra)
-            q = self.gp.last_quality
-            self.gp.gp_quality_ema = (
-                self._gp_quality_alpha * q
-                + (1 - self._gp_quality_alpha) * self.gp.gp_quality_ema
-            )
+            # ---- 拟合 GP（大数据集子采样 + CC-SSK 特征对齐）----
+            _gp_X, _gp_yn, cfeats = self._gp_training_pack(yn)
+            self.kernel._circuit_feats = cfeats
+            self.gp.fit(_gp_X, _gp_yn)
 
             # ---- 周期性超参数优化 ----
             # bo_step 按评估次数计（t 从 n_init 起计 BO 轮次）
             bo_step = t - self.n_init
+            _min_data_for_hp = self.n_init + 10   # 至少积累 n_init+10 个真实点再做 HP 优化
             if (self.hp_interval > 0
                     and bo_step > 0
-                    and bo_step % self.hp_interval == 0):
-                self.gp.optimize_hp(n_restarts=2, max_iter=5)
-                print(f"  [HP] θ_m={self.kernel.theta_m:.3f}  "
-                      f"θ_g={self.kernel.theta_g:.3f}  "
-                      f"σ²={self.kernel.signal_var:.3f}  "
-                      f"TR_ρ={self.tr.radius}  max_eff_len={self.max_eff_len}")
-                # HP 变化后重新归一化并拟合
-                ya, ym, ys = self._normalize()
-                yn = (ya - ym) / ys
-                self.gp.fit(self.X, yn, noise_extra=self._noise_extra)
-                q = self.gp.last_quality
-                self.gp.gp_quality_ema = (
-                    self._gp_quality_alpha * q
-                    + (1 - self._gp_quality_alpha) * self.gp.gp_quality_ema
-                )
+                    and len(self.X) >= _min_data_for_hp):
+                _adaptive_interval = (self.hp_interval
+                                      if self.tr.radius > self.max_eff_len // 2
+                                      else max(self.hp_interval // 2, 5))
+                if bo_step % _adaptive_interval == 0:
+                    self.gp.optimize_hp(n_restarts=2, max_iter=5)
+                    print(f"  [HP] θ_m={self.kernel.theta_m:.3f}  "
+                          f"θ_g={self.kernel.theta_g:.3f}  "
+                          f"σ²={self.kernel.signal_var:.3f}  "
+                          f"TR_ρ={self.tr.radius}  max_eff_len={self.max_eff_len}")
+                    ya, ym, ys = self._normalize()
+                    yn = (ya - ym) / ys
+                    _gp_X, _gp_yn, cfeats = self._gp_training_pack(yn)
+                    self.kernel._circuit_feats = cfeats
+                    self.gp.fit(_gp_X, _gp_yn)
 
             # ---- TR 收敛处理（含 PLE 扩展）----
             if self.tr.dead:
@@ -1645,12 +1703,16 @@ class BOiLSOptimizer:
                 # 注入 EI hint（重启时无 GP 预测，强制完整评估）
                 self.evaluator._ei_hint = 1.0
                 self.evaluator._ei_threshold = 0.5
+                _key = tuple(self._canonicalize(seq))
+                if _key in self._evaluated_set:
+                    seq = self._rand_seq()
+                    _key = tuple(self._canonicalize(seq))
+                self._evaluated_set.add(_key)
                 cost = self.evaluator(seq)
                 nc = -cost
                 self.X.append(seq)
                 self._seq_feats.append(self._compute_seq_feat(seq))
                 self.y_neg_cost.append(nc)
-                self._noise_extra.append(0.0)
                 self._update_elite(seq, cost)
                 improved_tr = nc > self.best_y
                 if improved_tr:
@@ -1737,11 +1799,24 @@ class BOiLSOptimizer:
                     if i not in top_indices:
                         top_indices.append(int(i))
 
+            # ---- 动态 skip_delta：从 delta_max 线性衰减到 delta_min ----
+            _phase_ratio = min(1.0, max(0.0,
+                (t - self.n_init) / max(n_iters - self.n_init, 1)))
+            _cur_skip_delta = (self.surrogate_skip_delta
+                               - (self.surrogate_skip_delta - self.surrogate_skip_delta_min)
+                               * _phase_ratio)
+
             for idx in top_indices:
                 if t >= n_iters:
                     break
                 pick = all_cands[int(idx)]
                 pick_list = list(pick)
+
+                _key = tuple(self._canonicalize(pick_list))
+                if _key in self._evaluated_set:
+                    t += 1
+                    continue
+                self._evaluated_set.add(_key)
 
                 # ---- 代理+GP 联合判断：是否跳过 ABC ----
                 _surr_skip = False
@@ -1755,22 +1830,16 @@ class BOiLSOptimizer:
                     # 代理模型预测 cost
                     _sp = self.surrogate.predict_batch([pick_list])[0]  # [area, delay]
                     _sc = self._surr_to_cost(_sp)
-                    # GP 健康时偏信任 GP，退化时偏信任代理模型
-                    _q = self.gp.gp_quality_ema
-                    _combined = _q * _gp_cost + (1 - _q) * _sc
-                    if _combined > best_cost_now + self.surrogate_skip_delta:
+                    # 加权平均：GP 和代理各占 50%
+                    _combined = 0.5 * _gp_cost + 0.5 * _sc
+                    if _combined > best_cost_now + _cur_skip_delta:
                         _surr_skip = True
                         _skip_cost = _sc
 
                 if _surr_skip:
-                    # 用代理预测结果代替 ABC，加入 GP 训练数据但不更新最优解
+                    # 跳过 ABC，且不写入 GP 训练集（代理预测不作监督信号）
                     cost = _skip_cost
                     nc = -cost
-                    self.X.append(pick_list)
-                    self._seq_feats.append(self._compute_seq_feat(pick_list))
-                    self.y_neg_cost.append(nc)
-                    surr_noise = 0.5 - 0.4 * self.gp.gp_quality_ema
-                    self._noise_extra.append(surr_noise)
                     # 不调用 _update_elite / 不更新 best_y（代理结果不可信作为最优）
                     improved = False
                     no_improve_rounds += 1
@@ -1781,7 +1850,7 @@ class BOiLSOptimizer:
                         f"  [{t:02d}][surr]  cost={_sc:.6f}  "
                         f"len={len(pick_list)}/{self.max_eff_len}  "
                         f"area={_sp[0]:.2f}  delay={_sp[1]:.2f}  "
-                        f"(gp={_gp_cost:.4f} surr={_sc:.4f} combined={_combined:.4f} skip_thr={best_cost_now + self.surrogate_skip_delta:.4f})\n"
+                        f"(gp={_gp_cost:.4f} surr={_sc:.4f} combined={_combined:.4f} skip_thr={best_cost_now + _cur_skip_delta:.4f})\n"
                         f"         序列: {seq_str}"
                     )
                     if (no_improve_rounds >= stagnation_patience
@@ -1792,10 +1861,6 @@ class BOiLSOptimizer:
                 # ---- 正常 ABC 评估（原有代码）----
                 cost = self.evaluator(pick)
                 nc = -cost
-                self.X.append(pick_list)
-                self._seq_feats.append(self._compute_seq_feat(pick_list))
-                self.y_neg_cost.append(nc)
-                self._noise_extra.append(0.0)
                 self._update_elite(pick, cost)
 
                 improved = nc > self.best_y
@@ -1805,6 +1870,18 @@ class BOiLSOptimizer:
                     no_improve_rounds = 0
                 else:
                     no_improve_rounds += 1
+
+                # 相似度去重（不影响精英池和 best_y，只跳过 GP 数据加入）
+                _add_to_gp = True
+                if len(self.X) > 0:
+                    _max_sim = max(self.kernel.normalized(pick_list, x) for x in self.X[-100:])
+                    if _max_sim > 0.95:
+                        _add_to_gp = False
+                if _add_to_gp:
+                    self.X.append(pick_list)
+                    self._seq_feats.append(self._compute_seq_feat(pick_list))
+                    self.y_neg_cost.append(nc)
+
                 self.tr.update(improved)
                 t += 1
                 # 每轮打印：标注是否改善
@@ -2002,8 +2079,11 @@ def parse_args():
                         help="每轮信赖域内的候选序列数 (default: 100)")
     parser.add_argument("--ssk_order", type=int, default=2,
                         help="SSK 子序列阶数 p, 越高捕获结构越精细但计算越慢 (default: 2)")
+    parser.add_argument("--kernel_noise_var", type=float, default=1e-2,
+                        help="SSK 核对角观测噪声方差 noise_var (default: 1e-2)")
     parser.add_argument("--hp_interval", type=int, default=20,
-                        help="GP 超参数优化间隔 (每 N 轮优化一次, 0=禁用) (default: 20)")
+                        help="GP 超参优化基准间隔；前 n_init+10 个真实点之前不触发，"
+                             "TR 半径较小时间隔减半（下限 5），0=禁用 (default: 20)")
     parser.add_argument("--seed", type=int, default=42,
                         help="随机种子 (default: 42)")
     parser.add_argument("--output", type=str, default="",
@@ -2055,8 +2135,10 @@ def parse_args():
                         help="AAG 文件目录，自动拼接 <circuit_name>.aag（--surrogate_aag 优先）")
     parser.add_argument("--surrogate_csv", type=str, default="",
                         help="代理模型可靠性 CSV 路径（可选，空=跳过可靠性检查）")
-    parser.add_argument("--surrogate_skip_delta", type=float, default=0.1,
-                        help="联合预测比 best_cost 高出超过 delta 时跳过 ABC (default: 0.1)")
+    parser.add_argument("--surrogate_skip_delta", type=float, default=0.08,
+                        help="skip_delta 初始（最大）值，随搜索线性衰减到 surrogate_skip_delta_min (default: 0.10)")
+    parser.add_argument("--surrogate_skip_delta_min", type=float, default=0.06,
+                        help="skip_delta 终止（最小）值 (default: 0.06)")
 
     return parser.parse_args()
 
@@ -2171,8 +2253,10 @@ def main():
         enable_seeded_init=not args.no_seeded_init,
         surrogate=surrogate,
         surrogate_skip_delta=args.surrogate_skip_delta,
+        surrogate_skip_delta_min=args.surrogate_skip_delta_min,
         ts_prob=args.ts_prob,
         diversity_thresh=args.diversity_thresh,
+        kernel_noise_var=args.kernel_noise_var,
     )
 
     print(f"\n{'='*60}")
