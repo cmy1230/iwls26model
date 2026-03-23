@@ -739,15 +739,24 @@ class GaussianProcessSSK:
         self.alpha = None
         self._K_cache = None
         self._hp_stamp = None
+        self.noise_extra = np.array([], dtype=float)
+        self.last_quality = 1.0
+        self.gp_quality_ema = 1.0
 
     def _hp_key(self):
         k = self.kernel
         return (k.theta_m, k.theta_g, k.signal_var, k.noise_var)
 
-    def fit(self, X, y):
+    def fit(self, X, y, noise_extra=None):
         self.X = [list(x) for x in X]
         self.y = np.asarray(y, dtype=float)
         n = len(X)
+        if noise_extra is None:
+            self.noise_extra = np.zeros(n, dtype=float)
+        else:
+            self.noise_extra = np.asarray(noise_extra, dtype=float)
+            if self.noise_extra.shape[0] != n:
+                raise ValueError("noise_extra length must match X length")
 
         hp       = self._hp_key()
         n_cached = self._K_cache.shape[0] if self._K_cache is not None else 0
@@ -775,17 +784,28 @@ class GaussianProcessSSK:
         # --- 应用 CC-SSK 权重（模块C）---
         # apply_cc_ssk 读取 kernel._circuit_feats，若为 None 则原样返回
         self.K = self.kernel.apply_cc_ssk(K)
+        if n > 0:
+            self.K[np.diag_indices(n)] += self.noise_extra
 
         self._factor()
 
     def _factor(self):
         n = len(self.y)
+        _JITTER_QUALITY = {
+            1e-6: 1.0,
+            1e-5: 0.9,
+            1e-4: 0.7,
+            1e-3: 0.4,
+            1e-2: 0.15,
+            0.1: 0.05,
+        }
         for jitter in (1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 0.1):
             try:
                 K_work = self.K.copy()
                 K_work[np.diag_indices(n)] += jitter
                 self.L_cho, self._lo = cho_factor(K_work, lower=True)
                 self.alpha = cho_solve((self.L_cho, self._lo), self.y)
+                self.last_quality = _JITTER_QUALITY.get(jitter, 0.0)
                 if jitter > 1e-4:
                     print(f"  [GP] Cholesky 收敛 (jitter={jitter:.0e})")
                 return
@@ -796,6 +816,7 @@ class GaussianProcessSSK:
         K_fixed = eigvecs @ np.diag(eigvals) @ eigvecs.T
         self.L_cho, self._lo = cho_factor(K_fixed, lower=True)
         self.alpha = cho_solve((self.L_cho, self._lo), self.y)
+        self.last_quality = 0.0
         print("  [GP] 特征值修正强制正定")
 
     def predict(self, X_new, X_new_feats=None):
@@ -826,7 +847,7 @@ class GaussianProcessSSK:
 
         def obj(params):
             self.kernel.set_params(params[0], params[1], params[2])
-            self.fit(X_save, y_save)
+            self.fit(X_save, y_save, noise_extra=self.noise_extra)
             return self.neg_log_ml()
 
         for _ in range(n_restarts):
@@ -846,7 +867,7 @@ class GaussianProcessSSK:
                 pass
 
         self.kernel.set_params(*best_p)
-        self.fit(X_save, y_save)
+        self.fit(X_save, y_save, noise_extra=self.noise_extra)
 
 
 # ============================================================================
@@ -1237,6 +1258,7 @@ class BOiLSOptimizer:
         self.X = []
         self._seq_feats = []   # 与 self.X 一一对应
         self.y_neg_cost = []
+        self._noise_extra = []
         self.best_x = None
         self.best_y = -float("inf")
 
@@ -1246,6 +1268,9 @@ class BOiLSOptimizer:
 
         self.ts_prob = ts_prob
         self.diversity_thresh = diversity_thresh
+        # GP 质量 EMA（0~1）：初始假设健康
+        self.gp.gp_quality_ema = 1.0
+        self._gp_quality_alpha = 0.3
 
     def _compute_seq_feat(self, seq: list) -> np.ndarray:
         """从序列索引提取结构特征，无需执行ABC，可用于任意候选序列。
@@ -1509,6 +1534,7 @@ class BOiLSOptimizer:
             self.X.append(seq)
             self._seq_feats.append(self._compute_seq_feat(seq))
             self.y_neg_cost.append(nc)
+            self._noise_extra.append(0.0)
             self._update_elite(seq, cost)
 
             improved_init = nc > self.best_y
@@ -1562,7 +1588,12 @@ class BOiLSOptimizer:
                 self.kernel._circuit_feats = None
 
             # ---- 拟合 GP ----
-            self.gp.fit(self.X, yn)
+            self.gp.fit(self.X, yn, noise_extra=self._noise_extra)
+            q = self.gp.last_quality
+            self.gp.gp_quality_ema = (
+                self._gp_quality_alpha * q
+                + (1 - self._gp_quality_alpha) * self.gp.gp_quality_ema
+            )
 
             # ---- 周期性超参数优化 ----
             # bo_step 按评估次数计（t 从 n_init 起计 BO 轮次）
@@ -1578,7 +1609,12 @@ class BOiLSOptimizer:
                 # HP 变化后重新归一化并拟合
                 ya, ym, ys = self._normalize()
                 yn = (ya - ym) / ys
-                self.gp.fit(self.X, yn)
+                self.gp.fit(self.X, yn, noise_extra=self._noise_extra)
+                q = self.gp.last_quality
+                self.gp.gp_quality_ema = (
+                    self._gp_quality_alpha * q
+                    + (1 - self._gp_quality_alpha) * self.gp.gp_quality_ema
+                )
 
             # ---- TR 收敛处理（含 PLE 扩展）----
             if self.tr.dead:
@@ -1614,6 +1650,7 @@ class BOiLSOptimizer:
                 self.X.append(seq)
                 self._seq_feats.append(self._compute_seq_feat(seq))
                 self.y_neg_cost.append(nc)
+                self._noise_extra.append(0.0)
                 self._update_elite(seq, cost)
                 improved_tr = nc > self.best_y
                 if improved_tr:
@@ -1718,8 +1755,9 @@ class BOiLSOptimizer:
                     # 代理模型预测 cost
                     _sp = self.surrogate.predict_batch([pick_list])[0]  # [area, delay]
                     _sc = self._surr_to_cost(_sp)
-                    # 加权平均：GP 和代理各占 50%
-                    _combined = 0.5 * _gp_cost + 0.5 * _sc
+                    # GP 健康时偏信任 GP，退化时偏信任代理模型
+                    _q = self.gp.gp_quality_ema
+                    _combined = _q * _gp_cost + (1 - _q) * _sc
                     if _combined > best_cost_now + self.surrogate_skip_delta:
                         _surr_skip = True
                         _skip_cost = _sc
@@ -1731,6 +1769,8 @@ class BOiLSOptimizer:
                     self.X.append(pick_list)
                     self._seq_feats.append(self._compute_seq_feat(pick_list))
                     self.y_neg_cost.append(nc)
+                    surr_noise = 0.5 - 0.4 * self.gp.gp_quality_ema
+                    self._noise_extra.append(surr_noise)
                     # 不调用 _update_elite / 不更新 best_y（代理结果不可信作为最优）
                     improved = False
                     no_improve_rounds += 1
@@ -1755,6 +1795,7 @@ class BOiLSOptimizer:
                 self.X.append(pick_list)
                 self._seq_feats.append(self._compute_seq_feat(pick_list))
                 self.y_neg_cost.append(nc)
+                self._noise_extra.append(0.0)
                 self._update_elite(pick, cost)
 
                 improved = nc > self.best_y
