@@ -1185,7 +1185,7 @@ class BOiLSOptimizer:
                  batch_k=2, elite_size=15,
                  enable_cc_ssk=True, circuit_weight=0.3,
                  enable_seeded_init=True,
-                 surrogate=None, surrogate_skip_delta=0.08,
+                 surrogate=None, surrogate_skip_delta=0.1,
                  ts_prob=0.5, diversity_thresh=0.8):
         self.evaluator = evaluator
         self.n_actions = n_actions
@@ -2014,8 +2014,8 @@ def parse_args():
                         help="AAG 文件目录，自动拼接 <circuit_name>.aag（--surrogate_aag 优先）")
     parser.add_argument("--surrogate_csv", type=str, default="",
                         help="代理模型可靠性 CSV 路径（可选，空=跳过可靠性检查）")
-    parser.add_argument("--surrogate_skip_delta", type=float, default=0.08,
-                        help="联合预测比 best_cost 高出超过 delta 时跳过 ABC (default: 0.08)")
+    parser.add_argument("--surrogate_skip_delta", type=float, default=0.1,
+                        help="联合预测比 best_cost 高出超过 delta 时跳过 ABC (default: 0.1)")
 
     return parser.parse_args()
 
