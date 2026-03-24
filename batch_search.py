@@ -22,11 +22,47 @@ import argparse
 import csv
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
+
+
+def _extract_timeout_best(stdout: str) -> dict:
+    """从 bayesian_search.py 的日志中提取超时时的当前最优信息。"""
+    if not stdout:
+        return {}
+
+    best = {}
+    best_seq = ""
+    # 例: [23][abc]★ cost=0.912345  len=20/20  area=1234  delay=56
+    pat = re.compile(
+        r"\[\d+\]\[abc\]★\s+cost=([0-9eE+\-.]+).*?area=([0-9eE+\-.]+).*?delay=([0-9eE+\-.]+)"
+    )
+    for m in pat.finditer(stdout):
+        try:
+            best["cost"] = float(m.group(1))
+        except Exception:
+            best["cost"] = m.group(1)
+        try:
+            best["area"] = float(m.group(2))
+        except Exception:
+            best["area"] = m.group(2)
+        try:
+            best["delay"] = float(m.group(3))
+        except Exception:
+            best["delay"] = m.group(3)
+
+    seq_pat = re.compile(r"序列:\s*(.+)")
+    seq_matches = list(seq_pat.finditer(stdout))
+    if seq_matches:
+        best_seq = seq_matches[-1].group(1).strip()
+        if best_seq:
+            best["sequence"] = best_seq
+
+    return best
 
 
 def run_one(blif_path: str, abc_exe: str, output_dir: str,
@@ -85,10 +121,64 @@ def run_one(blif_path: str, abc_exe: str, output_dir: str,
             print(f"        {last_lines}")
             return {"circuit": stem, "status": "FAIL", "error": last_lines}
 
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as e:
         elapsed = time.time() - t0
         print(f"[TIMEOUT] {stem}  ({elapsed:.0f}s)")
-        return {"circuit": stem, "status": "TIMEOUT"}
+        timeout_stdout = e.stdout or ""
+
+        # 优先读取已落盘 JSON（如果子进程在超时前正好写出结果）
+        if Path(json_out).exists():
+            try:
+                with open(json_out, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                best = data.get("best_stats", {})
+                init = data.get("init_stats", {})
+                return {
+                    "circuit": stem,
+                    "state": "TIMEOUT_SAVED",
+                    "status": "TIMEOUT_SAVED",
+                    "init_nodes": init.get("nodes", ""),
+                    "init_levels": init.get("levels", ""),
+                    "init_area": init.get("area", ""),
+                    "init_delay": init.get("delay", ""),
+                    "best_nodes": best.get("nodes", ""),
+                    "best_levels": best.get("levels", ""),
+                    "best_area": best.get("area", ""),
+                    "best_delay": best.get("delay", ""),
+                    "best_cost": data.get("best_cost", ""),
+                    "nodes_improve": data.get("improvement", {}).get("nodes", ""),
+                    "levels_improve": data.get("improvement", {}).get("levels", ""),
+                    "area_improve": data.get("improvement", {}).get("area", ""),
+                    "delay_improve": data.get("improvement", {}).get("delay", ""),
+                    "best_sequence": data.get("best_sequence_str", ""),
+                    "abc_verify_cmd": data.get("abc_verify_cmd", ""),
+                    "n_trials": data.get("n_trials", ""),
+                    "n_evaluated": data.get("n_evaluated", ""),
+                    "elapsed_sec": f"{elapsed:.1f}",
+                }
+            except Exception:
+                pass
+
+        # 回退: 从日志里提取“当前最优”并记录到 CSV
+        timeout_best = _extract_timeout_best(timeout_stdout)
+        if timeout_best:
+            print(f"[TIMEOUT-BEST] {stem} 已记录当前最优到 CSV")
+            return {
+                "circuit": stem,
+                "state": "TIMEOUT_BEST",
+                "status": "TIMEOUT_BEST",
+                "best_area": timeout_best.get("area", ""),
+                "best_delay": timeout_best.get("delay", ""),
+                "best_cost": timeout_best.get("cost", ""),
+                "best_sequence": timeout_best.get("sequence", ""),
+                "elapsed_sec": f"{elapsed:.1f}",
+            }
+        return {
+            "circuit": stem,
+            "state": "TIMEOUT",
+            "status": "TIMEOUT",
+            "elapsed_sec": f"{elapsed:.1f}",
+        }
     except Exception as e:
         print(f"[ERROR] {stem}: {e}")
         return {"circuit": stem, "status": "ERROR", "error": str(e)}
@@ -104,6 +194,7 @@ def run_one(blif_path: str, abc_exe: str, output_dir: str,
     init = data.get("init_stats", {})
     row = {
         "circuit": stem,
+        "state": "OK",
         "status": "OK",
         "init_nodes": init.get("nodes", ""),
         "init_levels": init.get("levels", ""),
@@ -218,7 +309,7 @@ def main():
     print(f"{'='*60}\n")
 
     csv_fields = [
-        "circuit", "status",
+        "circuit", "state", "status",
         "init_nodes", "init_levels", "init_area", "init_delay",
         "best_nodes", "best_levels", "best_area", "best_delay",
         "best_cost",
